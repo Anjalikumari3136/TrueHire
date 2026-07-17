@@ -1,0 +1,39 @@
+:root {
+  --bg: #0b0b0f;
+  --bg-elevated: #121218;
+  --card: #16161a;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --text: #ffffff;
+  --text-muted: #9ca3af;
+  --text-dim: #6b7280;
+  --gradient: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  --gradient-soft: linear-gradient(135deg, #6366f1, #9333ea);
+  --blue: #6366f1;
+  --purple: #8b5cf6;
+  --teal: #14b8a6;
+  --green: #22c55e;
+  --orange: #f97316;
+  --red: #ef4444;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+  --container: 1200px;
+  --nav-height: 72px;
+  --shadow-glow: 0 0 40px rgba(99, 102, 241, 0.35);
+}
+
+/* Light Theme Variables Override */
+:root.light-theme,
+html.light-theme,
+.light-theme {
+  --bg: #f3f4f6;
+  --bg-elevated: #ffffff;
+  --card: #ffffff;
+  --card-border: rgba(0, 0, 0, 0.08);
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-dim: #64748b;
+  --shadow-glow: 0 0 40px rgba(99, 102, 241, 0.12);
+}
+

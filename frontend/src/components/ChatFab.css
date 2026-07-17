@@ -1,0 +1,14 @@
+.chat-fab {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  width: 52px;
+  height: 52px;
+  border: none;
+  border-radius: 14px;
+  background: var(--gradient-soft);
+  color: white;
+  box-shadow: var(--shadow-glow);
+  cursor: pointer;
+  z-index: 200;
+}

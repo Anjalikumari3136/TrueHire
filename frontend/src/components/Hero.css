@@ -1,0 +1,146 @@
+.hero {
+  padding: 4rem 0 6rem;
+}
+
+.hero__grid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  align-items: center;
+  gap: 3rem;
+}
+
+.hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.08);
+  color: #c7d2fe;
+  font-size: 0.78rem;
+  margin-bottom: 1.5rem;
+}
+
+.hero__title {
+  font-size: clamp(2.5rem, 5vw, 4.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  font-weight: 800;
+  margin-bottom: 1.25rem;
+}
+
+.hero__desc {
+  color: var(--text-muted);
+  max-width: 520px;
+  font-size: 1.05rem;
+  margin-bottom: 2rem;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+}
+
+.hero__btn-primary {
+  padding: 1rem 1.5rem;
+  font-size: 1rem;
+}
+
+.hero__btn-secondary {
+  padding: 1rem 1.35rem;
+}
+
+.hero__visual {
+  display: grid;
+  place-items: center;
+  min-height: 420px;
+}
+
+.orbit {
+  position: relative;
+  width: 360px;
+  height: 360px;
+}
+
+.orbit__ring {
+  position: absolute;
+  inset: 40px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 50%;
+}
+
+.orbit__center {
+  position: absolute;
+  inset: 50%;
+  transform: translate(-50%, -50%);
+  width: 110px;
+  height: 110px;
+  border-radius: 22px;
+  background: var(--gradient-soft);
+  box-shadow: var(--shadow-glow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.orbit__center-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.orbit__node {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: -36px 0 0 -36px;
+  width: 72px;
+  text-align: center;
+}
+
+.orbit__node-box {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 0.35rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid;
+  display: grid;
+  place-items: center;
+}
+
+.orbit__node span {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 960px) {
+  .hero__grid {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .hero__desc {
+    margin-inline: auto;
+  }
+
+  .hero__actions {
+    justify-content: center;
+  }
+
+  .hero__visual {
+    min-height: 340px;
+  }
+
+  .orbit {
+    transform: scale(0.85);
+  }
+}

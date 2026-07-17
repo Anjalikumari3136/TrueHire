@@ -1,0 +1,86 @@
+/* ── OTP boxes ──────────────────────────────────────────────── */
+.otp-form {
+  gap: 1.25rem;
+}
+
+.otp-boxes {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  margin: 0.5rem 0;
+}
+
+.otp-box {
+  width: 48px;
+  height: 56px;
+  border-radius: 12px;
+  border: 1.5px solid rgba(99, 102, 241, 0.25);
+  background: rgba(99, 102, 241, 0.06);
+  color: #e2e8f0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  caret-color: #818cf8;
+}
+
+.otp-box:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.18);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.otp-box--filled {
+  border-color: rgba(99, 102, 241, 0.55);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.otp-box--error {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+/* ── Messages ───────────────────────────────────────────────── */
+.otp-error {
+  color: #f87171;
+  font-size: 0.82rem;
+  text-align: center;
+  margin: 0;
+}
+
+.otp-success {
+  color: #34d399;
+  font-size: 0.82rem;
+  text-align: center;
+  margin: 0;
+}
+
+/* ── Resend ─────────────────────────────────────────────────── */
+.otp-resend {
+  display: flex;
+  justify-content: center;
+  margin-top: -0.25rem;
+}
+
+.otp-resend-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #818cf8;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.otp-resend-btn:hover:not(.otp-resend-btn--disabled) {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.otp-resend-btn--disabled {
+  color: #475569;
+  cursor: not-allowed;
+}

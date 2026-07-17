@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+langchain-anthropic
+pypdf2
+httpx
+python-dotenv
+pydantic[email]
+pyjwt
+passlib[bcrypt]
+google-genai

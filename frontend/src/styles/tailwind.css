@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind theme + utilities for the post-login flow (app2 / OnboardingWizard).
+ * Mirrors frontend2's index.css @theme so its utility classes resolve.
+ * NOTE: the global `body { background }` rule from frontend2 is intentionally
+ * omitted here so the landing/auth pages keep their own styling (styles/global.css).
+ */
+
+@theme {
+  /* Brand palette */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+
+  /* Surfaces */
+  --color-surface-0: #06060a;
+  --color-surface-50: #0a0a10;
+  --color-surface-100: #111118;
+  --color-surface-200: #1a1a24;
+  --color-surface-300: #24242f;
+
+  /* Text */
+  --color-text-primary: #f0f0f5;
+  --color-text-secondary: #9898a8;
+  --color-text-muted: #5a5a6e;
+
+  /* Status */
+  --color-verified: #22c55e;
+  --color-verified-bg: #22c55e1a;
+  --color-unverified: #f59e0b;
+  --color-unverified-bg: #f59e0b1a;
+  --color-error: #ef4444;
+  --color-error-bg: #ef44441a;
+
+  /* Fonts */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Animations */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.15); }
+  50% { box-shadow: 0 0 40px rgba(99, 102, 241, 0.3); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes progress-fill {
+  from { width: 0%; }
+}
+
+@utility animate-fade-in {
+  animation: fade-in 0.4s ease-out both;
+}
+
+@utility animate-fade-in-up {
+  animation: fade-in-up 0.5s ease-out both;
+}
+
+@utility animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@utility animate-spin-slow {
+  animation: spin-slow 1.2s linear infinite;
+}
+
+/* Glass surface utilities */
+@utility glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+@utility glass-strong {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
