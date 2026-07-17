@@ -4,6 +4,13 @@ import { useAuth } from '../context/AuthContext';
 import { startInterview } from '../api';
 import { getProgress, isRoundUnlocked, prerequisiteOf, ROUND_ORDER } from '../../services/roundProgress';
 
+// Friendly labels for the "already completed" popup.
+const ROUND_LABELS = {
+  OA: 'OA (Online Assessment)',
+  Technical: 'Technical Depth',
+  HR: 'HR Behavioral',
+};
+
 /**
  * JobTarget component.
  * Allows candidates to define target job context and select their interview round,
@@ -34,6 +41,9 @@ export default function JobTarget({ profileData, onBack, onSubmit, initialStep, 
 
   // Animated Checklist States
   const [checklistIndex, setChecklistIndex] = useState(0);
+
+  // "You already completed this round" popup (holds the round id, or null)
+  const [completedNotice, setCompletedNotice] = useState(null);
 
   // Drag & drop handlers
   const handleDrag = (e) => {
@@ -87,6 +97,12 @@ export default function JobTarget({ profileData, onBack, onSubmit, initialStep, 
   // Run the mock loading checklist sequence and API call in parallel
   const handleStartInterview = async () => {
     if (!roundType) return;
+
+    // Block re-attempting a round that is already completed.
+    if (getProgress()[roundType]) {
+      setCompletedNotice(roundType);
+      return;
+    }
 
     // OA round uses the standalone coding interface on its own route.
     // Technical / HR keep their existing live-session flow below.
@@ -421,7 +437,10 @@ export default function JobTarget({ profileData, onBack, onSubmit, initialStep, 
                 return (
                   <div
                     key={r.id}
-                    onClick={() => unlocked && setRoundType(r.id)}
+                    onClick={() => {
+                      if (completed) { setCompletedNotice(r.id); return; }
+                      if (unlocked) setRoundType(r.id);
+                    }}
                     className={`p-4 rounded-xl border transition-all duration-300 relative group
                       ${!unlocked
                         ? 'border-white/[0.06] bg-surface-200/30 opacity-60 cursor-not-allowed'
@@ -518,6 +537,40 @@ export default function JobTarget({ profileData, onBack, onSubmit, initialStep, 
             </div>
           </div>
         </div>
+
+        {/* "Already completed" popup */}
+        {completedNotice && (
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="w-full max-w-md glass-strong rounded-2xl p-7 relative overflow-hidden animate-fade-in-up">
+              <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand-400/30 to-transparent" />
+
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4 bg-verified/10 text-verified">
+                <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+
+              <h2 className="text-lg font-bold text-text-primary mb-2">Round already completed</h2>
+              <p className="text-sm text-text-secondary leading-relaxed mb-5">
+                You have already completed the{' '}
+                <span className="font-semibold text-text-primary">
+                  {ROUND_LABELS[completedNotice] || completedNotice}
+                </span>{' '}
+                round. You cannot attempt it again.
+              </p>
+
+              <button
+                type="button"
+                onClick={() => setCompletedNotice(null)}
+                className="w-full py-3 px-4 rounded-xl font-semibold text-sm text-white
+                           bg-gradient-to-r from-brand-500 to-brand-600 hover:from-brand-400 hover:to-brand-500
+                           shadow-[0_0_20px_rgba(99,102,241,0.2)] transition-all duration-300 cursor-pointer"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
