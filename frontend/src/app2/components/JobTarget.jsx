@@ -1,31 +1,36 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { startInterview } from '../api';
+import { getProgress, isRoundUnlocked, prerequisiteOf, ROUND_ORDER } from '../../services/roundProgress';
 
 /**
  * JobTarget component.
  * Allows candidates to define target job context and select their interview round,
  * followed by a rich mock analysis transition before initiating the live session.
  */
-export default function JobTarget({ profileData, onBack, onSubmit }) {
+export default function JobTarget({ profileData, onBack, onSubmit, initialStep, initialForm }) {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
   // Flow states: 'form' | 'round_select' | 'loading'
-  const [flowStep, setFlowStep] = useState('form');
+  // initialStep lets the flow reopen directly on 'round_select' when the
+  // candidate returns from the OA round.
+  const [flowStep, setFlowStep] = useState(initialStep || 'form');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Form Fields
-  const [company, setCompany] = useState('');
-  const [jobDescription, setJobDescription] = useState('');
-  const [experience, setExperience] = useState('0-1 years');
+  // Form Fields (prefilled from initialForm when returning from the OA round)
+  const [company, setCompany] = useState(initialForm?.company || '');
+  const [jobDescription, setJobDescription] = useState(initialForm?.jobDescription || '');
+  const [experience, setExperience] = useState(initialForm?.experience || '0-1 years');
   const [newFile, setNewFile] = useState(null);
   const [usePreExistingResume, setUsePreExistingResume] = useState(!!profileData?.resume);
   const [dragActive, setDragActive] = useState(false);
 
   // Round Selection
-  const [roundType, setRoundType] = useState(''); // 'OA' | 'Technical' | 'HR'
+  const [roundType, setRoundType] = useState(initialForm?.roundType || ''); // 'OA' | 'Technical' | 'HR'
 
   // Animated Checklist States
   const [checklistIndex, setChecklistIndex] = useState(0);
@@ -82,6 +87,26 @@ export default function JobTarget({ profileData, onBack, onSubmit }) {
   // Run the mock loading checklist sequence and API call in parallel
   const handleStartInterview = async () => {
     if (!roundType) return;
+
+    // OA round uses the standalone coding interface on its own route.
+    // Technical / HR keep their existing live-session flow below.
+    if (roundType === 'OA') {
+      // Persist enough context so we can return the candidate to this exact
+      // "Select Interview Round" screen after the OA round finishes.
+      sessionStorage.setItem(
+        'truehire_flow_ctx',
+        JSON.stringify({
+          profileData,
+          company: company.trim(),
+          jobDescription: jobDescription.trim(),
+          experience,
+          roundType: 'OA',
+        })
+      );
+      navigate('/interview/oa');
+      return;
+    }
+
     setError('');
     setFlowStep('loading');
     setChecklistIndex(0);
@@ -354,6 +379,12 @@ export default function JobTarget({ profileData, onBack, onSubmit }) {
       { id: 'HR', name: 'HR Behavioral', duration: '30 min', desc: 'Focus on teamwork, adaptability, communication, and project leadership.' }
     ];
 
+    // Rounds must be taken in order (OA → Technical → HR); a round stays locked
+    // until the previous one is completed.
+    const progress = getProgress();
+    const selectedUnlocked = roundType ? isRoundUnlocked(roundType, progress) : false;
+    const allRoundsComplete = ROUND_ORDER.every((r) => progress[r]);
+
     return (
       <div className="min-h-screen flex items-center justify-center px-4 pt-20 pb-12">
         <div className="w-full max-w-lg animate-fade-in-up">
@@ -383,35 +414,78 @@ export default function JobTarget({ profileData, onBack, onSubmit }) {
 
             <div className="space-y-4 mb-6">
               {rounds.map((r) => {
+                const unlocked = isRoundUnlocked(r.id, progress);
+                const completed = !!progress[r.id];
                 const isSelected = roundType === r.id;
+                const prereq = prerequisiteOf(r.id);
                 return (
                   <div
                     key={r.id}
-                    onClick={() => setRoundType(r.id)}
-                    className={`p-4 rounded-xl border cursor-pointer transition-all duration-300 relative group
-                      ${isSelected
-                        ? 'border-brand-500 bg-brand-500/[0.04] shadow-[0_0_20px_rgba(99,102,241,0.1)]'
-                        : 'border-white/[0.08] hover:border-brand-500/30 hover:bg-white/[0.01]'
+                    onClick={() => unlocked && setRoundType(r.id)}
+                    className={`p-4 rounded-xl border transition-all duration-300 relative group
+                      ${!unlocked
+                        ? 'border-white/[0.06] bg-surface-200/30 opacity-60 cursor-not-allowed'
+                        : isSelected
+                          ? 'border-brand-500 bg-brand-500/[0.04] shadow-[0_0_20px_rgba(99,102,241,0.1)] cursor-pointer'
+                          : 'border-white/[0.08] hover:border-brand-500/30 hover:bg-white/[0.01] cursor-pointer'
                       }`}
                   >
-                    <div className="flex items-start justify-between mb-1">
-                      <h3 className={`text-sm font-bold transition-colors ${isSelected ? 'text-brand-400' : 'text-text-primary group-hover:text-brand-400'}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <h3 className={`text-sm font-bold transition-colors flex items-center gap-1.5 ${isSelected ? 'text-brand-400' : unlocked ? 'text-text-primary group-hover:text-brand-400' : 'text-text-muted'}`}>
+                        {!unlocked && (
+                          <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="5" y="11" width="14" height="10" rx="2" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 018 0v4" />
+                          </svg>
+                        )}
                         {r.name}
                       </h3>
-                      <span className={`text-xs px-2 py-0.5 rounded-md font-medium border
-                        ${isSelected
-                          ? 'bg-brand-500/20 text-brand-300 border-brand-500/20'
-                          : 'bg-surface-200 text-text-muted border-white/[0.06]'
-                        }`}
-                      >
-                        {r.duration}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {completed && (
+                          <span className="text-xs px-2 py-0.5 rounded-md font-medium border bg-verified/10 text-verified border-verified/25">
+                            Completed
+                          </span>
+                        )}
+                        <span className={`text-xs px-2 py-0.5 rounded-md font-medium border
+                          ${isSelected
+                            ? 'bg-brand-500/20 text-brand-300 border-brand-500/20'
+                            : 'bg-surface-200 text-text-muted border-white/[0.06]'
+                          }`}
+                        >
+                          {r.duration}
+                        </span>
+                      </div>
                     </div>
                     <p className="text-xs text-text-secondary leading-relaxed">{r.desc}</p>
+                    {!unlocked && prereq && (
+                      <p className="text-[11px] text-text-muted mt-2 flex items-center gap-1">
+                        <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="5" y="11" width="14" height="10" rx="2" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 018 0v4" />
+                        </svg>
+                        Complete the {prereq} round to unlock.
+                      </p>
+                    )}
                   </div>
                 );
               })}
             </div>
+
+            {allRoundsComplete && (
+              <button
+                type="button"
+                onClick={() => navigate('/interview/final-report')}
+                className="w-full mb-4 py-3 px-4 rounded-xl font-semibold text-sm text-white
+                           bg-gradient-to-r from-verified to-verified/80 hover:opacity-90
+                           shadow-[0_0_20px_rgba(34,197,94,0.25)] transition-all duration-300 cursor-pointer
+                           flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                View Final Report
+              </button>
+            )}
 
             <div className="flex gap-3">
               <button
@@ -425,7 +499,7 @@ export default function JobTarget({ profileData, onBack, onSubmit }) {
               </button>
               <button
                 type="button"
-                disabled={!roundType}
+                disabled={!roundType || !selectedUnlocked}
                 onClick={handleStartInterview}
                 className="w-2/3 py-3 px-4 rounded-xl font-semibold text-sm text-white
                            bg-gradient-to-r from-brand-500 to-brand-600

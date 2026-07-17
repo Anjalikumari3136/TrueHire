@@ -6,6 +6,7 @@ Run with: uvicorn main:app --reload
 import io
 import os
 import json
+import uuid
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
@@ -746,7 +747,387 @@ async def get_interview_report(
     except KeyError as e:
         raise HTTPException(404, str(e))
 
+    # Record this round (Technical / HR / OA-agent) for the final report.
+    session = interview_agent.get_session(session_id)
+    if session:
+        candidate_assessments.setdefault(current_user["email"], {})[session.round_type] = {
+            "report": report,
+            "qa_history": session.qa_history,
+        }
+
     return report
+
+
+# =====================================================================
+# 6. ONLINE ASSESSMENT (OA) ENGINE  — 5 personalized coding questions
+#    Flow: React → Express (JWT verify) → FastAPI → Gemini
+# =====================================================================
+
+# In-memory OA store (no DB yet). One active session per candidate email.
+oa_sessions: dict = {}
+
+# Per-candidate results across all three rounds, keyed by email:
+#   { email: { "OA": {...}, "Technical": {...}, "HR": {...} } }
+# Used to build the final consolidated candidate report.
+candidate_assessments: dict = {}
+
+OA_DURATION_MINUTES = 90
+
+
+class OAExample(BaseModel):
+    input: str = Field(description="Example input")
+    output: str = Field(description="Expected output for the example input")
+    explanation: str = Field(default="", description="Why this output is correct")
+
+
+class OAStarterCode(BaseModel):
+    python: str = Field(description="Python starter code / function signature")
+    cpp: str = Field(description="C++ starter code / function signature")
+    java: str = Field(description="Java starter code / function signature")
+    javascript: str = Field(description="JavaScript starter code / function signature")
+
+
+class OAQuestion(BaseModel):
+    id: int = Field(description="Question number 1..5")
+    difficulty: str = Field(description="Must be 'Easy', 'Medium', or 'Hard'")
+    title: str = Field(description="Short question title")
+    problem: str = Field(description="Full problem statement")
+    constraints: str = Field(description="Constraints, newline separated")
+    examples: List[OAExample] = Field(description="1-3 worked examples")
+    starterCode: OAStarterCode
+
+
+class OAQuestionSet(BaseModel):
+    questions: List[OAQuestion] = Field(description="Exactly 5 questions")
+
+
+class OAAnswer(BaseModel):
+    question_id: int
+    code: str = ""
+
+
+class OASubmitRequest(BaseModel):
+    session_id: str
+    language: str
+    question_ids: List[int] = []
+    answers: List[OAAnswer] = []
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    time_taken_seconds: Optional[int] = None
+
+
+# ── Gemini prompt for question generation (STEP 2, 3) ───────────────────────────
+OA_SYSTEM_PROMPT = (
+    "You are an expert technical assessment designer for a hiring platform. "
+    "Generate a personalized Online Assessment (OA) of EXACTLY 5 coding questions, "
+    "tailored to the candidate's real skills, projects, GitHub repositories, "
+    "programming languages, frameworks, and experience level.\n\n"
+    "STRICT difficulty distribution (in this exact order):\n"
+    "  - Question id 1 → Easy\n"
+    "  - Question id 2 → Easy\n"
+    "  - Question id 3 → Medium\n"
+    "  - Question id 4 → Medium\n"
+    "  - Question id 5 → Hard\n\n"
+    "Personalization rules:\n"
+    "  - Favor the candidate's strongest languages/frameworks; do NOT ask about "
+    "    unrelated technologies (e.g. do not ask random Java questions if the "
+    "    candidate is a Python/React/SQL developer).\n"
+    "  - Where natural, theme the problem context around the domains of their projects.\n"
+    "  - Each problem must be a self-contained coding challenge solvable in any language.\n\n"
+    "For every question provide: a clear title, a detailed problem statement, "
+    "constraints (newline separated), 1-3 worked examples (input, output, explanation), "
+    "and starter code for python, cpp, java and javascript. "
+    "Number the questions id 1..5 following the difficulty distribution above. "
+    "Return JSON only."
+)
+
+
+def _summarize_profile_for_oa(profile: Optional[dict]) -> str:
+    """Flatten the stored candidate profile into a compact prompt context."""
+    if not profile:
+        return (
+            "No detailed profile is available. Assume a general full-stack software "
+            "engineering candidate comfortable with Python, JavaScript, Java and C++."
+        )
+
+    resume = profile.get("resume") or {}
+    github = profile.get("github") or {}
+    skills = resume.get("skills") or []
+    projects = resume.get("projects") or []
+    experience = resume.get("experience_years")
+    verified = profile.get("verified_skills") or []
+    gh_languages = github.get("evidenced_languages") or []
+    repos = github.get("repos") or []
+
+    project_lines = "; ".join(
+        f"{p.get('name', '')} ({p.get('tech_stack', '')})" for p in projects[:6]
+    )
+    repo_lines = ", ".join(r.get("name", "") for r in repos[:8])
+
+    return (
+        f"Skills: {', '.join(skills) or 'N/A'}\n"
+        f"GitHub-evidenced languages: {', '.join(gh_languages) or 'N/A'}\n"
+        f"Verified skills: {', '.join(verified) or 'N/A'}\n"
+        f"Projects: {project_lines or 'N/A'}\n"
+        f"Notable repositories: {repo_lines or 'N/A'}\n"
+        f"Experience: {experience if experience is not None else 'N/A'} years"
+    )
+
+
+async def generate_oa_questions(profile: Optional[dict]) -> List[dict]:
+    """Ask Gemini for 5 schema-validated, personalized questions."""
+    profile_summary = _summarize_profile_for_oa(profile)
+    user_prompt = (
+        f"Candidate Profile:\n{profile_summary}\n\n"
+        "Generate the 5-question personalized OA now."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=OA_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=OAQuestionSet,
+                temperature=0.6,
+            ),
+        )
+    except genai_errors.APIError as e:
+        raise HTTPException(502, f"Gemini API error while generating assessment: {e}")
+
+    if not response.text:
+        raise HTTPException(502, "Gemini returned an empty assessment.")
+
+    try:
+        parsed = OAQuestionSet.model_validate(json.loads(response.text))
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(502, f"Gemini returned invalid assessment JSON: {e}")
+
+    return [q.model_dump() for q in parsed.questions]
+
+
+@app.post("/api/oa/generate")
+async def oa_generate(current_user: dict = Depends(get_current_user)):
+    """
+    Start or resume the OA session (STEP 1, 2, 15, 16).
+    If an active session already exists for this candidate, it is returned
+    unchanged so the candidate continues instead of getting new questions.
+    """
+    email = current_user["email"]
+
+    existing = oa_sessions.get(email)
+    if existing and existing.get("status") == "active":
+        return {
+            "session_id": existing["session_id"],
+            "questions": existing["questions"],
+            "duration_minutes": existing["duration_minutes"],
+            "started_at": existing["started_at"],
+            "status": "active",
+            "resumed": True,
+        }
+
+    profile = current_user.get("profile")
+    questions = await generate_oa_questions(profile)
+
+    session_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    oa_sessions[email] = {
+        "session_id": session_id,
+        "questions": questions,
+        "duration_minutes": OA_DURATION_MINUTES,
+        "started_at": started_at,
+        "status": "active",
+        "submission": None,
+    }
+
+    return {
+        "session_id": session_id,
+        "questions": questions,
+        "duration_minutes": OA_DURATION_MINUTES,
+        "started_at": started_at,
+        "status": "active",
+        "resumed": False,
+    }
+
+
+@app.post("/api/oa/submit")
+async def oa_submit(
+    req: OASubmitRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Store the candidate's submission in memory (STEP 10, 11).
+    No Judge0 / evaluation yet — that comes later.
+    """
+    email = current_user["email"]
+    session = oa_sessions.get(email)
+    if not session:
+        raise HTTPException(404, "No active OA session found for this candidate.")
+
+    session["status"] = "submitted"
+    session["submission"] = {
+        "language": req.language,
+        "question_ids": req.question_ids,
+        "answers": [a.model_dump() for a in req.answers],
+        "started_at": req.started_at,
+        "ended_at": req.ended_at,
+        "time_taken_seconds": req.time_taken_seconds,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Record the OA round for the final consolidated report.
+    candidate_assessments.setdefault(email, {})["OA"] = {
+        "language": req.language,
+        "answers": [a.model_dump() for a in req.answers],
+        "questions": session.get("questions", []),
+        "time_taken_seconds": req.time_taken_seconds,
+    }
+
+    return {
+        "success": True,
+        "message": "OA submitted successfully.",
+        "session_id": req.session_id,
+    }
+
+
+# =====================================================================
+# 7. FINAL CONSOLIDATED CANDIDATE REPORT (OA + Technical + HR + résumé)
+# =====================================================================
+
+class RoundScoreSummary(BaseModel):
+    round: str = Field(description="OA, Technical, or HR")
+    score: float = Field(description="Round score 0-100 (0 if not attempted)")
+    summary: str = Field(description="Short performance summary for this round")
+
+
+class FinalCandidateReport(BaseModel):
+    overall_score: float = Field(description="Overall aggregate score 0-100")
+    performance_rating: str = Field(
+        description="One of: Excellent, Strong, Average, Needs Improvement, Poor"
+    )
+    overall_summary: str = Field(
+        description="Detailed multi-sentence assessment of overall performance"
+    )
+    strengths: List[str] = Field(description="Key strengths shown across rounds and résumé")
+    weaknesses: List[str] = Field(description="Clear weaknesses / gaps identified")
+    areas_to_improve: List[str] = Field(
+        description="Specific, actionable areas the candidate should improve"
+    )
+    round_breakdown: List[RoundScoreSummary] = Field(description="Per-round score and summary")
+    resume_alignment: str = Field(
+        description="How demonstrated performance aligns with the résumé claims"
+    )
+    final_recommendation: str = Field(description="Overall hiring-readiness recommendation")
+
+
+def _format_oa_for_report(oa: Optional[dict]) -> str:
+    if not oa:
+        return "Not attempted."
+    answers = {a.get("question_id"): a.get("code", "") for a in oa.get("answers", [])}
+    parts = []
+    for q in oa.get("questions", []):
+        code = answers.get(q.get("id"), "") or "(no code submitted)"
+        parts.append(
+            f"[{q.get('difficulty')}] {q.get('title')}\n"
+            f"Candidate code ({oa.get('language')}):\n{code[:1500]}"
+        )
+    header = (
+        f"Language: {oa.get('language')}, "
+        f"Time taken: {oa.get('time_taken_seconds')}s\n"
+    )
+    return header + "\n\n".join(parts)
+
+
+def _format_interview_round_for_report(data: Optional[dict]) -> str:
+    if not data:
+        return "Not attempted."
+    rep = data.get("report", {}) or {}
+    qa = data.get("qa_history", []) or []
+    lines = [
+        f"Round score: {rep.get('overall_score')}/100",
+        f"Summary: {rep.get('summary', '')}",
+    ]
+    for i, item in enumerate(qa, 1):
+        ev = item.get("evaluation", {}) or {}
+        lines.append(
+            f"Q{i}: {item.get('question', '')}\n"
+            f"A: {item.get('answer', '')}\n"
+            f"Score: {ev.get('score')}/10 - {ev.get('reasoning', '')}"
+        )
+    return "\n".join(lines)
+
+
+async def generate_final_candidate_report(
+    profile: Optional[dict],
+    assessments: dict,
+) -> dict:
+    """Combine résumé + all three rounds into one detailed Gemini report."""
+    profile_summary = _summarize_profile_for_oa(profile)
+    oa_text = _format_oa_for_report(assessments.get("OA"))
+    tech_text = _format_interview_round_for_report(assessments.get("Technical"))
+    hr_text = _format_interview_round_for_report(assessments.get("HR"))
+
+    user_prompt = (
+        f"Candidate Résumé / Profile:\n{profile_summary}\n\n"
+        f"=== OA (Online Assessment) Round ===\n{oa_text}\n\n"
+        f"=== Technical Round ===\n{tech_text}\n\n"
+        f"=== HR Round ===\n{hr_text}\n\n"
+        "Produce the final consolidated candidate report now."
+    )
+
+    system_instruction = (
+        "You are a senior technical recruiter and hiring-panel lead for TrueHire AI. "
+        "Read the candidate's résumé/profile and their performance across all three interview "
+        "rounds (OA coding assessment, Technical interview, HR behavioral). Produce an honest, "
+        "calibrated, and DETAILED final report. Compute an overall score (0-100) that weights "
+        "coding/technical ability most, then communication/behavioral. Clearly articulate the "
+        "candidate's strengths, weaknesses, and specific, actionable areas to improve. Compare "
+        "demonstrated ability against the résumé claims and flag any over- or under-claiming. "
+        "For any round that was not attempted, note it explicitly and score conservatively. "
+        "Return JSON only."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=FinalCandidateReport,
+                temperature=0.3,
+            ),
+        )
+    except genai_errors.APIError as e:
+        raise HTTPException(502, f"Gemini API error while generating final report: {e}")
+
+    if not response.text:
+        raise HTTPException(502, "Gemini returned an empty final report.")
+
+    try:
+        return FinalCandidateReport.model_validate(json.loads(response.text)).model_dump()
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(502, f"Gemini returned invalid final report JSON: {e}")
+
+
+@app.post("/api/oa/final-report")
+async def oa_final_report(current_user: dict = Depends(get_current_user)):
+    """
+    Generate the final consolidated report across OA + Technical + HR + résumé.
+    Uses whatever round data has been recorded this session (in-memory).
+    """
+    email = current_user["email"]
+    assessments = candidate_assessments.get(email, {})
+    profile = current_user.get("profile")
+
+    report = await generate_final_candidate_report(profile, assessments)
+    completed = [r for r in ("OA", "Technical", "HR") if assessments.get(r)]
+
+    return {"report": report, "completed_rounds": completed}
 
 
 @app.get("/")

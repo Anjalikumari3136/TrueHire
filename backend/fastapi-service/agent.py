@@ -172,6 +172,10 @@ class InterviewAgent:
             raise KeyError(f"Session '{session_id}' not found")
         return session
 
+    def get_session(self, session_id: str) -> Optional[InterviewSession]:
+        """Public, non-raising accessor used to persist per-round results."""
+        return self._sessions.get(session_id)
+
     # === Single structured turn processing (combined eval + question gen) ===
 
     async def process_turn(self, session_id: str, answer_text: Optional[str] = None) -> dict:

@@ -11,6 +11,8 @@ import SignupPage from "./pages/SignupPage";
 import OtpPage from "./pages/OtpPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import OnboardingFlow from "./app2/OnboardingFlow";
+import OAPage from "./pages/OAPage";
+import FinalReportPage from "./pages/FinalReportPage";
 import "./styles/global.css";
 
 function LandingPage() {
@@ -29,9 +31,6 @@ function LandingPage() {
     </>
   );
 }
-
-// The login flow stores the JWT under "truehire_token" in localStorage
-// (Remember me) or sessionStorage. Gate the post-login flow on it.
 function isAuthenticated() {
   return Boolean(
     localStorage.getItem("truehire_token") ||
@@ -47,14 +46,12 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/verify-otp" element={<OtpPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
 
-        {/* Post-login flow (frontend2 UI) — opens after login */}
         <Route
           path="/dashboard"
           element={
@@ -64,7 +61,24 @@ export default function App() {
           }
         />
 
-        {/* Fallback */}
+        <Route
+          path="/interview/oa"
+          element={
+            <ProtectedRoute>
+              <OAPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/interview/final-report"
+          element={
+            <ProtectedRoute>
+              <FinalReportPage />
+            </ProtectedRoute>
+          }
+        />
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

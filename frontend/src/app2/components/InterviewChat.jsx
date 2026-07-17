@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { submitTurn, getInterviewReport } from '../api';
+import ConfirmSubmitModal from '../../components/ConfirmSubmitModal';
+import { markRoundComplete, getProgress, ROUND_ORDER } from '../../services/roundProgress';
 
 const API_BASE = import.meta.env.VITE_FASTAPI_URL || 'http://localhost:8000';
 
 export default function InterviewChat({ sessionData, onBackToDashboard }) {
   const { token } = useAuth();
+  const navigate = useNavigate();
   
   // Timer state
   const [timeLeft, setTimeLeft] = useState(() => {
@@ -29,6 +33,9 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
   // Report states
   const [report, setReport] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
+
+  // End Session confirmation modal (same UX as the OA round's End Test)
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
 
   // Auto-scroll ref
   const chatEndRef = useRef(null);
@@ -101,8 +108,11 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
         return;
       }
       
-      setCurrentQuestion((prev) => prev + text.charAt(index));
+      // Render the absolute prefix (slice) instead of appending to previous
+      // state — this is immune to state resets/races so no leading character
+      // is ever dropped (e.g. "In your..." never becomes "n your...").
       index++;
+      setCurrentQuestion(text.slice(0, index));
     }, 20); // 20ms per character
   };
 
@@ -195,6 +205,8 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
 
   // Fetch final evaluation report
   const handleTransitionToReport = async () => {
+    // Mark this round complete so the next round unlocks (Technical → HR).
+    markRoundComplete(sessionData.roundType);
     setViewState('report');
     setLoadingReport(true);
     setError('');
@@ -229,16 +241,41 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
               </span>
             </div>
 
-            <div className="flex items-center gap-2 border border-white/[0.08] bg-surface-100 px-3 py-1 rounded-lg">
-              <svg className="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span className={`text-xs font-mono font-bold tracking-wider ${timeLeft < 180 ? 'text-error animate-pulse' : 'text-text-primary'}`}>
-                {formatTime(timeLeft)}
-              </span>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 border border-white/[0.08] bg-surface-100 px-3 py-1 rounded-lg">
+                <svg className="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className={`text-xs font-mono font-bold tracking-wider ${timeLeft < 180 ? 'text-error animate-pulse' : 'text-text-primary'}`}>
+                  {formatTime(timeLeft)}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowEndConfirm(true)}
+                className="px-4 py-1.5 rounded-lg font-semibold text-xs text-white bg-gradient-to-r from-error to-error/80
+                           hover:opacity-90 transition-all duration-200 cursor-pointer"
+              >
+                End Session
+              </button>
             </div>
           </div>
         </div>
+
+        {/* End Session confirmation (same UX as the OA round) */}
+        <ConfirmSubmitModal
+          open={showEndConfirm}
+          submitting={false}
+          title="End Session?"
+          message="Are you sure you want to end this interview? Your evaluation report will be generated from the answers so far."
+          confirmLabel="End Session"
+          onCancel={() => setShowEndConfirm(false)}
+          onConfirm={() => {
+            setShowEndConfirm(false);
+            handleTransitionToReport();
+          }}
+        />
 
         {/* Chat Feed */}
         <div className="flex-1 max-w-4xl w-full mx-auto px-6 py-6 overflow-y-auto space-y-6 flex flex-col">
@@ -255,14 +292,14 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
                 <div className="w-8 h-8 rounded-lg bg-brand-500/20 border border-brand-500/20 flex items-center justify-center text-brand-300 font-bold text-sm shrink-0">
                   AI
                 </div>
-                <div className="flex-1 bg-surface-100/50 border border-white/[0.04] rounded-2xl p-4 text-sm text-text-primary leading-relaxed">
+                <div className="flex-1 bg-surface-100/50 border border-white/[0.04] rounded-2xl p-4 text-sm text-text-primary leading-relaxed break-words whitespace-pre-wrap min-w-0">
                   {turn.question}
                 </div>
               </div>
 
               {/* Answer */}
               <div className="flex gap-4 items-start justify-end">
-                <div className="flex-1 bg-brand-500/10 border border-brand-500/25 rounded-2xl p-4 text-sm text-text-primary leading-relaxed text-right">
+                <div className="flex-1 bg-brand-500/10 border border-brand-500/25 rounded-2xl p-4 text-sm text-text-primary leading-relaxed text-right break-words whitespace-pre-wrap min-w-0">
                   {turn.answer}
                 </div>
                 <div className="w-8 h-8 rounded-lg bg-surface-200 border border-white/[0.08] flex items-center justify-center text-text-secondary font-bold text-sm shrink-0">
@@ -299,7 +336,7 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
               <div className="w-8 h-8 rounded-lg bg-brand-500/20 border border-brand-500/20 flex items-center justify-center text-brand-300 font-bold text-sm shrink-0">
                 AI
               </div>
-              <div className="flex-1 bg-surface-100/50 border border-white/[0.04] rounded-2xl p-4 text-sm text-text-primary leading-relaxed relative min-h-[50px]">
+              <div className="flex-1 bg-surface-100/50 border border-white/[0.04] rounded-2xl p-4 text-sm text-text-primary leading-relaxed relative min-h-[50px] break-words whitespace-pre-wrap min-w-0">
                 {currentQuestion}
                 {isStreaming && (
                   <span className="inline-block w-1.5 h-4 bg-brand-400 ml-1 animate-pulse" />
@@ -581,8 +618,21 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
             </ul>
           </div>
 
-          {/* Start Over button */}
-          <div className="text-center animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+          {/* Action buttons */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+            {ROUND_ORDER.every((r) => getProgress()[r]) && (
+              <button
+                onClick={() => navigate('/interview/final-report')}
+                className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-verified to-verified/80
+                           hover:opacity-90 shadow-[0_0_20px_rgba(34,197,94,0.25)] transition-all duration-300 cursor-pointer
+                           flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                View Final Report
+              </button>
+            )}
             <button
               onClick={onBackToDashboard}
               className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600

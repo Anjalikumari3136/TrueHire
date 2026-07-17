@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import Navbar from "./components/Navbar";
@@ -18,6 +18,32 @@ function FlowContent() {
   const [view, setView] = useState("upload");
   const [profileData, setProfileData] = useState(null);
   const [interviewSession, setInterviewSession] = useState(null);
+  const [jobTargetInit, setJobTargetInit] = useState(null); // { step, form } when returning from OA
+
+  // After the OA round finishes, return the candidate straight to the
+  // "Select Interview Round" screen instead of restarting from upload.
+  useEffect(() => {
+    if (sessionStorage.getItem("truehire_return_round_select") !== "1") return;
+    sessionStorage.removeItem("truehire_return_round_select");
+    try {
+      const ctx = JSON.parse(sessionStorage.getItem("truehire_flow_ctx") || "null");
+      if (ctx?.profileData) {
+        setProfileData(ctx.profileData);
+        setJobTargetInit({
+          step: "round_select",
+          form: {
+            company: ctx.company,
+            jobDescription: ctx.jobDescription,
+            experience: ctx.experience,
+            roundType: ctx.roundType,
+          },
+        });
+        setView("job_target");
+      }
+    } catch {
+      /* ignore malformed context */
+    }
+  }, []);
 
   const handleNavigate = (target) => {
     // Navbar logout sends the user to the public landing route.
@@ -67,6 +93,8 @@ function FlowContent() {
           profileData={profileData}
           onBack={() => setView("results")}
           onSubmit={handleJobTargetSubmit}
+          initialStep={jobTargetInit?.step}
+          initialForm={jobTargetInit?.form}
         />
       )}
       {view === "interview" && interviewSession && (
