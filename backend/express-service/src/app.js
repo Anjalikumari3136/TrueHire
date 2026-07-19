@@ -47,6 +47,18 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+/**
+ * Express 5 leaves `req.body` UNDEFINED when there is nothing to parse (no body,
+ * or a missing/mismatched Content-Type) — Express 4 defaulted it to `{}`.
+ * Controllers destructure `req.body` directly, so without this a bodyless
+ * request throws `Cannot destructure property 'email' of 'req.body'` and returns
+ * a 500, instead of hitting the handler's own validation and returning 400.
+ */
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
+
 app.use("/api/auth", authRoutes);
 app.use("/api/resume", resumeRoutes);
 app.use("/api/oa", oaRoutes);
