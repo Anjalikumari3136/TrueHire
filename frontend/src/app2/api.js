@@ -1,12 +1,5 @@
 const API_BASE = import.meta.env.VITE_FASTAPI_URL || 'http://localhost:8000';
 
-/**
- * Build a candidate profile by uploading a resume PDF and GitHub username.
- * @param {string} token - JWT auth token
- * @param {File} file - PDF resume file
- * @param {string} githubUsername - GitHub username
- * @returns {Promise<object>} Profile data
- */
 export async function buildProfile(token, file, githubUsername, extraFields = {}) {
   const formData = new FormData();
   formData.append('file', file);
@@ -46,9 +39,6 @@ export async function buildProfile(token, file, githubUsername, extraFields = {}
   return res.json();
 }
 
-/**
- * Start a new practice interview session.
- */
 export async function startInterview(token, { roundType, company, jobDescription, experience, candidateProfile }) {
   let res;
   try {
@@ -78,9 +68,6 @@ export async function startInterview(token, { roundType, company, jobDescription
   return res.json();
 }
 
-/**
- * Submit the turn response (answers previous question and/or fetches next question).
- */
 export async function submitTurn(token, sessionId, answerText = null) {
   let res;
   try {
@@ -107,9 +94,6 @@ export async function submitTurn(token, sessionId, answerText = null) {
   return res.json();
 }
 
-/**
- * Retrieve the final structured round report.
- */
 export async function getInterviewReport(token, sessionId) {
   let res;
   try {

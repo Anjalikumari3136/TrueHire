@@ -32,9 +32,42 @@ export async function submitOA(payload) {
 
 /**
  * Fetch the final consolidated report across OA + Technical + HR + résumé.
- * @returns {Promise<{report:object, completed_rounds:string[]}>}
+ *
+ * On the FIRST completion this triggers the server to persist the report,
+ * generate the PDF once, store it and email the candidate. On subsequent calls
+ * the server returns the already-stored report (never regenerated).
+ *
+ * @returns {Promise<{report:object, completed_rounds:string[], interview_id?:string, pdf_available?:boolean, email_sent?:boolean}>}
  */
 export async function getFinalReport() {
   const res = await api.post("/api/oa/final-report");
   return res.data;
+}
+
+/**
+ * Download the stored report PDF (the same one attached to the email and shown
+ * in the dashboard). Streams from Express with the JWT attached; ownership is
+ * enforced server-side. Never regenerates the PDF.
+ *
+ * @param {string} [interviewId] - specific interview; defaults to the latest.
+ */
+export async function downloadReportPdf(interviewId) {
+  const res = await api.get("/api/oa/report/pdf", {
+    params: interviewId ? { id: interviewId } : {},
+    responseType: "blob",
+  });
+
+  const blob = new Blob([res.data], { type: "application/pdf" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+
+  const disposition = res.headers?.["content-disposition"] || "";
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  link.download = match ? match[1] : "TrueHire_Interview_Report.pdf";
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
 }

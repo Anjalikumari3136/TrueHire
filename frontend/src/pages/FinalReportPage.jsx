@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getFinalReport } from "../services/oaApi";
+import { getFinalReport, downloadReportPdf } from "../services/oaApi";
 
 /**
  * FinalReportPage — consolidated candidate report across all three rounds
@@ -31,6 +31,10 @@ export default function FinalReportPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [report, setReport] = useState(null);
   const [completedRounds, setCompletedRounds] = useState([]);
+  const [pdfAvailable, setPdfAvailable] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadErr, setDownloadErr] = useState("");
 
   const load = useCallback(async () => {
     setStatus("loading");
@@ -39,6 +43,8 @@ export default function FinalReportPage() {
       const data = await getFinalReport();
       setReport(data.report);
       setCompletedRounds(data.completed_rounds || []);
+      setPdfAvailable(data.pdf_available !== false);
+      setEmailSent(Boolean(data.email_sent));
       setStatus("ready");
     } catch (err) {
       setErrorMsg(
@@ -51,6 +57,20 @@ export default function FinalReportPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleDownload = useCallback(async () => {
+    setDownloading(true);
+    setDownloadErr("");
+    try {
+      await downloadReportPdf();
+    } catch (err) {
+      setDownloadErr(
+        err.response?.data?.message || err.message || "Unable to download the report PDF."
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }, []);
 
   // ── Loading ────────────────────────────────────────────────────────────────
   if (status === "loading") {
@@ -273,15 +293,33 @@ export default function FinalReportPage() {
 
         {/* Actions */}
         <div className="text-center">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600
-                       hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]
-                       hover:shadow-[0_0_30px_rgba(99,102,241,0.35)] transition-all duration-300 cursor-pointer"
-          >
-            Back to Dashboard
-          </button>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading || !pdfAvailable}
+              className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600
+                         hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]
+                         hover:shadow-[0_0_30px_rgba(99,102,241,0.35)] transition-all duration-300 cursor-pointer
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {downloading ? "Preparing PDF…" : "Download PDF"}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/dashboard")}
+              className="py-3 px-8 rounded-xl font-semibold text-sm text-text-primary border border-white/10
+                         hover:bg-white/5 transition-all duration-300 cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          </div>
+          {downloadErr && <p className="text-xs text-error mt-3">{downloadErr}</p>}
+          {emailSent && (
+            <p className="text-xs text-text-muted mt-3">
+              A copy of this report has been emailed to you.
+            </p>
+          )}
         </div>
       </div>
     </div>

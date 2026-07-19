@@ -44,36 +44,26 @@ if os.path.exists(express_env):
         print(f"[TrueHire] Warning: could not read express-service/.env: {e}")
 
 # ── Credentials & Config ────────────────────────────────────────────────────────
-GITHUB_TOKEN   = os.getenv("GITHUB_TOKEN")
-GITHUB_API     = "https://api.github.com"
 JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-this-in-production")
 JWT_ALGORITHM  = "HS256"
 JWT_EXPIRY_HOURS = 24
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError(
-        "Missing GEMINI_API_KEY environment variable. "
-        "Get a free key at https://aistudio.google.com/app/apikey and add it to backend/.env"
-    )
-
-# ── Gemini config ───────────────────────────────────────────────────────────────
-# Centralised model name — change this single constant when migrating models.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-gemini = genai.Client(api_key=GEMINI_API_KEY)
-
-print(f"[TrueHire] Gemini client initialised  model={GEMINI_MODEL}  key={GEMINI_API_KEY[:8]}...")
+# ── Gemini config & AI workflow (LangGraph) ─────────────────────────────────────
+# The shared Gemini client + model constant now live in graph.llm and are reused
+# by BOTH the LangGraph nodes and the non-migrated endpoints in this file, so
+# there is a single Gemini integration. The AI workflow (resume parsing, GitHub
+# analysis, profile build, OA generation, final report) is implemented as
+# LangGraph graphs inside the `graph` package — an internal detail of this
+# service. Endpoint paths, request models and response shapes are unchanged.
+from graph.llm import gemini, GEMINI_MODEL
+from graph.utils import extract_pdf_text, analyze_github, http_client
+from graph.nodes.resume_nodes import parse_resume_text
+from graph.profile_graph import run_profile_graph
+from graph.oa_graph import run_oa_graph
+from graph.report_graph import run_report_graph
 
 # ── Interview orchestrator agent (uses the shared Gemini client) ────────────────
 interview_agent = InterviewAgent(gemini, model_name=GEMINI_MODEL)
-
-# Create shared HTTPX AsyncClient for connection reuse & pool optimization.
-# 10.0 seconds timeout per request.
-headers = {"User-Agent": "TrueHire-AI"}
-if GITHUB_TOKEN:
-    headers["Authorization"] = f"token {GITHUB_TOKEN}"
-
-http_client = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(10.0))
 
 
 # ── Auth helpers ────────────────────────────────────────────────────────────────
@@ -204,169 +194,10 @@ class EvaluationReport(BaseModel):
     weaknesses: List[str]
     historical_analysis: DeltaReport
 
-class ProjectInfo(BaseModel):
-    name: str = Field(description="Project name")
-    description: str = Field(description="Brief project description")
-    tech_stack: str = Field(description="Technologies used, comma separated")
-
-class ResumeSkills(BaseModel):
-    skills: List[str] = Field(description="Technical skills mentioned")
-    projects: List[ProjectInfo] = Field(description="List of projects extracted from the resume")
-    experience_years: float = Field(description="Total years of experience")
-    education: List[str] = Field(description="Degrees/institutions")
-    github_url: str = Field(description="GitHub URL if found in resume, else empty string")
-    linkedin_url: str = Field(description="LinkedIn URL if found, else empty string")
-
-
-# =====================================================================
-# 2. FILE PROCESSING & REPOSITORY EXTRACTION
-# =====================================================================
-
-def extract_pdf_text(file_bytes: bytes) -> str:
-    reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    if not text.strip():
-        raise HTTPException(422, "Could not extract text from PDF. It may be a scanned image.")
-    return text
-
-
-async def parse_resume_text(resume_text: str) -> ResumeSkills:
-    """
-    Uses Gemini with response_mime_type=application/json + response_schema
-    to return schema-validated structured data — no manual JSON parsing.
-    """
-    prompt = (
-        "Extract structured information from this resume text. "
-        "Be precise: only extract what is explicitly stated, do not infer or hallucinate skills. "
-        "Return every field in the schema; use empty strings / empty lists for missing values.\n\n"
-        f"Resume text:\n{resume_text}"
-    )
-
-    try:
-        response = await asyncio.to_thread(
-            gemini.models.generate_content,
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ResumeSkills,
-                temperature=0,
-            ),
-        )
-    except genai_errors.APIError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini API error while parsing resume: {e}",
-        )
-
-    if not response.text:
-        raise HTTPException(
-            status_code=502,
-            detail="Gemini returned an empty response while parsing resume.",
-        )
-
-    try:
-        return ResumeSkills.model_validate(json.loads(response.text))
-    except (json.JSONDecodeError, ValueError) as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini returned invalid JSON for resume parsing: {e}",
-        )
-
-
-async def analyze_github(username: str, max_repos: int = 10) -> dict:
-    """
-    Fetches repos, languages and recent commits for a GitHub user.
-    All requests carry the GITHUB_TOKEN header (5000 req/hr authenticated
-    vs 60 req/hr unauthenticated).
-    """
-    t0 = time.perf_counter()
-    
-    repos_resp = await http_client.get(
-        f"{GITHUB_API}/users/{username}/repos",
-        params={"sort": "updated", "per_page": 30},
-    )
-    if repos_resp.status_code != 200:
-        raise HTTPException(
-            404,
-            f"GitHub user '{username}' not found or rate limited "
-            f"(status {repos_resp.status_code})"
-        )
-
-    t_repos = time.perf_counter()
-    print(f"[Profiling] GitHub fetch repos list: {t_repos - t0:.4f}s")
-
-    repos = repos_resp.json()
-    
-    # Filter out forks
-    non_forks = [repo for repo in repos if not repo.get("fork")]
-    
-    # Cap to max_repos
-    target_repos = non_forks[:max_repos]
-    
-    async def fetch_repo_details(repo, idx):
-        repo_name = repo["name"]
-        
-        # Concurrently fetch languages (all repos) and commits (top 5 repos only)
-        tasks = [http_client.get(repo["languages_url"])]
-        
-        fetch_commits = idx < 5
-        if fetch_commits:
-            tasks.append(
-                http_client.get(
-                    f"{GITHUB_API}/repos/{username}/{repo_name}/commits",
-                    params={"per_page": 30},
-                )
-            )
-            
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        languages = []
-        commit_count = 0
-        
-        # Languages result
-        lang_res = results[0]
-        if not isinstance(lang_res, Exception) and lang_res.status_code == 200:
-            languages = list(lang_res.json().keys())
-            
-        # Commits result
-        if fetch_commits:
-            commit_res = results[1]
-            if not isinstance(commit_res, Exception) and commit_res.status_code == 200:
-                commit_count = len(commit_res.json())
-                
-        return {
-            "name":           repo["name"],
-            "description":    repo["description"],
-            "languages":      languages,
-            "stars":          repo["stargazers_count"],
-            "recent_commits": commit_count,
-            "updated_at":     repo["updated_at"],
-        }
-
-    # Fetch details for all target repos concurrently
-    detail_tasks = [fetch_repo_details(repo, idx) for idx, repo in enumerate(target_repos)]
-    
-    t_details_start = time.perf_counter()
-    analyzed_repos = await asyncio.gather(*detail_tasks)
-    t_details_end = time.perf_counter()
-    print(f"[Profiling] GitHub fetch details for {len(target_repos)} repos concurrently: {t_details_end - t_details_start:.4f}s")
-
-    all_languages = set()
-    for r in analyzed_repos:
-        all_languages.update(r["languages"])
-
-    total_time = time.perf_counter() - t0
-    print(f"[Profiling] Total analyze_github: {total_time:.4f}s")
-
-    return {
-        "username":            username,
-        "total_repos":         len(analyzed_repos),
-        "evidenced_languages": list(all_languages),
-        "repos":               analyzed_repos,
-    }
+# NOTE: ProjectInfo / ResumeSkills schemas now live in graph/schemas.py and the
+# extract_pdf_text / parse_resume_text / analyze_github utilities now live in
+# graph/utils.py and graph/nodes/resume_nodes.py (imported at the top of this
+# file). They are reused unchanged by the endpoints below and by the graphs.
 
 
 # =====================================================================
@@ -430,40 +261,23 @@ async def build_profile(
     """
     t_start = time.perf_counter()
     try:
-        t_pdf_start = time.perf_counter()
+        # Extract PDF text here (needs the uploaded file bytes), then hand the
+        # rest of the workflow — resume parsing, GitHub analysis, skill merge —
+        # to the LangGraph profile graph, which produces the identical profile
+        # dict this endpoint returned before.
         file_bytes = await file.read()
         resume_text = extract_pdf_text(file_bytes)
-        t_pdf_end = time.perf_counter()
-        print(f"[Profiling] PDF text extraction: {t_pdf_end - t_pdf_start:.4f}s")
 
-        t_tasks_start = time.perf_counter()
-        # Run resume parsing and GitHub analysis concurrently
-        resume_data, github_data = await asyncio.gather(
-            parse_resume_text(resume_text),
-            analyze_github(github_username)
+        profile = await run_profile_graph(
+            resume_text=resume_text,
+            github_username=github_username,
+            college_name=college_name,
+            linkedin_profile=linkedin_profile,
+            leetcode_profile=leetcode_profile,
+            other_coding_profile=other_coding_profile,
+            graduation_year=graduation_year,
+            cgpa=cgpa,
         )
-        t_tasks_end = time.perf_counter()
-        print(f"[Profiling] Concurrently parsed resume and analyzed GitHub: {t_tasks_end - t_tasks_start:.4f}s")
-
-        claimed   = {s.lower() for s in resume_data.skills}
-        evidenced = {l.lower() for l in github_data["evidenced_languages"]}
-
-        verified_skills   = list(claimed & evidenced)
-        unverified_skills = list(claimed - evidenced)
-
-        profile = {
-            "resume":            resume_data.model_dump(),
-            "github":            github_data,
-            "verified_skills":   verified_skills,
-            "unverified_skills": unverified_skills,
-            "verification_rate": round(len(verified_skills) / len(claimed), 2) if claimed else 0,
-            "college_name":      college_name,
-            "linkedin_profile":  linkedin_profile,
-            "leetcode_profile":  leetcode_profile,
-            "other_coding_profile": other_coding_profile,
-            "graduation_year":   graduation_year,
-            "cgpa":              cgpa,
-        }
 
         # Persist on the user record so /api/interview/start can look it up
         fake_users_db[current_user["email"]]["profile"] = profile
@@ -774,31 +588,10 @@ candidate_assessments: dict = {}
 OA_DURATION_MINUTES = 90
 
 
-class OAExample(BaseModel):
-    input: str = Field(description="Example input")
-    output: str = Field(description="Expected output for the example input")
-    explanation: str = Field(default="", description="Why this output is correct")
-
-
-class OAStarterCode(BaseModel):
-    python: str = Field(description="Python starter code / function signature")
-    cpp: str = Field(description="C++ starter code / function signature")
-    java: str = Field(description="Java starter code / function signature")
-    javascript: str = Field(description="JavaScript starter code / function signature")
-
-
-class OAQuestion(BaseModel):
-    id: int = Field(description="Question number 1..5")
-    difficulty: str = Field(description="Must be 'Easy', 'Medium', or 'Hard'")
-    title: str = Field(description="Short question title")
-    problem: str = Field(description="Full problem statement")
-    constraints: str = Field(description="Constraints, newline separated")
-    examples: List[OAExample] = Field(description="1-3 worked examples")
-    starterCode: OAStarterCode
-
-
-class OAQuestionSet(BaseModel):
-    questions: List[OAQuestion] = Field(description="Exactly 5 questions")
+# NOTE: OA question schemas (OAExample, OAStarterCode, OAQuestion, OAQuestionSet)
+# now live in graph/schemas.py and are used by the OA generation node. The
+# request schemas below (OAAnswer, OASubmitRequest) stay here — they belong to
+# the /api/oa/submit endpoint, which has no AI/Gemini logic.
 
 
 class OAAnswer(BaseModel):
@@ -816,96 +609,11 @@ class OASubmitRequest(BaseModel):
     time_taken_seconds: Optional[int] = None
 
 
-# ── Gemini prompt for question generation (STEP 2, 3) ───────────────────────────
-OA_SYSTEM_PROMPT = (
-    "You are an expert technical assessment designer for a hiring platform. "
-    "Generate a personalized Online Assessment (OA) of EXACTLY 5 coding questions, "
-    "tailored to the candidate's real skills, projects, GitHub repositories, "
-    "programming languages, frameworks, and experience level.\n\n"
-    "STRICT difficulty distribution (in this exact order):\n"
-    "  - Question id 1 → Easy\n"
-    "  - Question id 2 → Easy\n"
-    "  - Question id 3 → Medium\n"
-    "  - Question id 4 → Medium\n"
-    "  - Question id 5 → Hard\n\n"
-    "Personalization rules:\n"
-    "  - Favor the candidate's strongest languages/frameworks; do NOT ask about "
-    "    unrelated technologies (e.g. do not ask random Java questions if the "
-    "    candidate is a Python/React/SQL developer).\n"
-    "  - Where natural, theme the problem context around the domains of their projects.\n"
-    "  - Each problem must be a self-contained coding challenge solvable in any language.\n\n"
-    "For every question provide: a clear title, a detailed problem statement, "
-    "constraints (newline separated), 1-3 worked examples (input, output, explanation), "
-    "and starter code for python, cpp, java and javascript. "
-    "Number the questions id 1..5 following the difficulty distribution above. "
-    "Return JSON only."
-)
-
-
-def _summarize_profile_for_oa(profile: Optional[dict]) -> str:
-    """Flatten the stored candidate profile into a compact prompt context."""
-    if not profile:
-        return (
-            "No detailed profile is available. Assume a general full-stack software "
-            "engineering candidate comfortable with Python, JavaScript, Java and C++."
-        )
-
-    resume = profile.get("resume") or {}
-    github = profile.get("github") or {}
-    skills = resume.get("skills") or []
-    projects = resume.get("projects") or []
-    experience = resume.get("experience_years")
-    verified = profile.get("verified_skills") or []
-    gh_languages = github.get("evidenced_languages") or []
-    repos = github.get("repos") or []
-
-    project_lines = "; ".join(
-        f"{p.get('name', '')} ({p.get('tech_stack', '')})" for p in projects[:6]
-    )
-    repo_lines = ", ".join(r.get("name", "") for r in repos[:8])
-
-    return (
-        f"Skills: {', '.join(skills) or 'N/A'}\n"
-        f"GitHub-evidenced languages: {', '.join(gh_languages) or 'N/A'}\n"
-        f"Verified skills: {', '.join(verified) or 'N/A'}\n"
-        f"Projects: {project_lines or 'N/A'}\n"
-        f"Notable repositories: {repo_lines or 'N/A'}\n"
-        f"Experience: {experience if experience is not None else 'N/A'} years"
-    )
-
-
-async def generate_oa_questions(profile: Optional[dict]) -> List[dict]:
-    """Ask Gemini for 5 schema-validated, personalized questions."""
-    profile_summary = _summarize_profile_for_oa(profile)
-    user_prompt = (
-        f"Candidate Profile:\n{profile_summary}\n\n"
-        "Generate the 5-question personalized OA now."
-    )
-
-    try:
-        response = await asyncio.to_thread(
-            gemini.models.generate_content,
-            model=GEMINI_MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=OA_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=OAQuestionSet,
-                temperature=0.6,
-            ),
-        )
-    except genai_errors.APIError as e:
-        raise HTTPException(502, f"Gemini API error while generating assessment: {e}")
-
-    if not response.text:
-        raise HTTPException(502, "Gemini returned an empty assessment.")
-
-    try:
-        parsed = OAQuestionSet.model_validate(json.loads(response.text))
-    except (json.JSONDecodeError, ValueError) as e:
-        raise HTTPException(502, f"Gemini returned invalid assessment JSON: {e}")
-
-    return [q.model_dump() for q in parsed.questions]
+# NOTE: The OA system prompt now lives in graph/prompts.py, the profile
+# summarizer in graph/utils.py (summarize_profile_for_oa), and the question
+# generation logic in graph/nodes/oa_nodes.py. The OA graph (run_oa_graph)
+# wires them together with the SAME prompt, schema and fixed difficulty
+# distribution — behavior is unchanged.
 
 
 @app.post("/api/oa/generate")
@@ -929,7 +637,7 @@ async def oa_generate(current_user: dict = Depends(get_current_user)):
         }
 
     profile = current_user.get("profile")
-    questions = await generate_oa_questions(profile)
+    questions = await run_oa_graph(profile)
 
     session_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
@@ -997,121 +705,11 @@ async def oa_submit(
 # 7. FINAL CONSOLIDATED CANDIDATE REPORT (OA + Technical + HR + résumé)
 # =====================================================================
 
-class RoundScoreSummary(BaseModel):
-    round: str = Field(description="OA, Technical, or HR")
-    score: float = Field(description="Round score 0-100 (0 if not attempted)")
-    summary: str = Field(description="Short performance summary for this round")
-
-
-class FinalCandidateReport(BaseModel):
-    overall_score: float = Field(description="Overall aggregate score 0-100")
-    performance_rating: str = Field(
-        description="One of: Excellent, Strong, Average, Needs Improvement, Poor"
-    )
-    overall_summary: str = Field(
-        description="Detailed multi-sentence assessment of overall performance"
-    )
-    strengths: List[str] = Field(description="Key strengths shown across rounds and résumé")
-    weaknesses: List[str] = Field(description="Clear weaknesses / gaps identified")
-    areas_to_improve: List[str] = Field(
-        description="Specific, actionable areas the candidate should improve"
-    )
-    round_breakdown: List[RoundScoreSummary] = Field(description="Per-round score and summary")
-    resume_alignment: str = Field(
-        description="How demonstrated performance aligns with the résumé claims"
-    )
-    final_recommendation: str = Field(description="Overall hiring-readiness recommendation")
-
-
-def _format_oa_for_report(oa: Optional[dict]) -> str:
-    if not oa:
-        return "Not attempted."
-    answers = {a.get("question_id"): a.get("code", "") for a in oa.get("answers", [])}
-    parts = []
-    for q in oa.get("questions", []):
-        code = answers.get(q.get("id"), "") or "(no code submitted)"
-        parts.append(
-            f"[{q.get('difficulty')}] {q.get('title')}\n"
-            f"Candidate code ({oa.get('language')}):\n{code[:1500]}"
-        )
-    header = (
-        f"Language: {oa.get('language')}, "
-        f"Time taken: {oa.get('time_taken_seconds')}s\n"
-    )
-    return header + "\n\n".join(parts)
-
-
-def _format_interview_round_for_report(data: Optional[dict]) -> str:
-    if not data:
-        return "Not attempted."
-    rep = data.get("report", {}) or {}
-    qa = data.get("qa_history", []) or []
-    lines = [
-        f"Round score: {rep.get('overall_score')}/100",
-        f"Summary: {rep.get('summary', '')}",
-    ]
-    for i, item in enumerate(qa, 1):
-        ev = item.get("evaluation", {}) or {}
-        lines.append(
-            f"Q{i}: {item.get('question', '')}\n"
-            f"A: {item.get('answer', '')}\n"
-            f"Score: {ev.get('score')}/10 - {ev.get('reasoning', '')}"
-        )
-    return "\n".join(lines)
-
-
-async def generate_final_candidate_report(
-    profile: Optional[dict],
-    assessments: dict,
-) -> dict:
-    """Combine résumé + all three rounds into one detailed Gemini report."""
-    profile_summary = _summarize_profile_for_oa(profile)
-    oa_text = _format_oa_for_report(assessments.get("OA"))
-    tech_text = _format_interview_round_for_report(assessments.get("Technical"))
-    hr_text = _format_interview_round_for_report(assessments.get("HR"))
-
-    user_prompt = (
-        f"Candidate Résumé / Profile:\n{profile_summary}\n\n"
-        f"=== OA (Online Assessment) Round ===\n{oa_text}\n\n"
-        f"=== Technical Round ===\n{tech_text}\n\n"
-        f"=== HR Round ===\n{hr_text}\n\n"
-        "Produce the final consolidated candidate report now."
-    )
-
-    system_instruction = (
-        "You are a senior technical recruiter and hiring-panel lead for TrueHire AI. "
-        "Read the candidate's résumé/profile and their performance across all three interview "
-        "rounds (OA coding assessment, Technical interview, HR behavioral). Produce an honest, "
-        "calibrated, and DETAILED final report. Compute an overall score (0-100) that weights "
-        "coding/technical ability most, then communication/behavioral. Clearly articulate the "
-        "candidate's strengths, weaknesses, and specific, actionable areas to improve. Compare "
-        "demonstrated ability against the résumé claims and flag any over- or under-claiming. "
-        "For any round that was not attempted, note it explicitly and score conservatively. "
-        "Return JSON only."
-    )
-
-    try:
-        response = await asyncio.to_thread(
-            gemini.models.generate_content,
-            model=GEMINI_MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                response_schema=FinalCandidateReport,
-                temperature=0.3,
-            ),
-        )
-    except genai_errors.APIError as e:
-        raise HTTPException(502, f"Gemini API error while generating final report: {e}")
-
-    if not response.text:
-        raise HTTPException(502, "Gemini returned an empty final report.")
-
-    try:
-        return FinalCandidateReport.model_validate(json.loads(response.text)).model_dump()
-    except (json.JSONDecodeError, ValueError) as e:
-        raise HTTPException(502, f"Gemini returned invalid final report JSON: {e}")
+# NOTE: The final-report schemas (RoundScoreSummary, FinalCandidateReport) now
+# live in graph/schemas.py, the round formatters in graph/utils.py, the system
+# prompt in graph/prompts.py, and the generation logic in
+# graph/nodes/report_nodes.py. The report graph (run_report_graph) wires them
+# together with the SAME prompt, schema and formatting — behavior is unchanged.
 
 
 @app.post("/api/oa/final-report")
@@ -1124,7 +722,7 @@ async def oa_final_report(current_user: dict = Depends(get_current_user)):
     assessments = candidate_assessments.get(email, {})
     profile = current_user.get("profile")
 
-    report = await generate_final_candidate_report(profile, assessments)
+    report = await run_report_graph(profile, assessments)
     completed = [r for r in ("OA", "Technical", "HR") if assessments.get(r)]
 
     return {"report": report, "completed_rounds": completed}
