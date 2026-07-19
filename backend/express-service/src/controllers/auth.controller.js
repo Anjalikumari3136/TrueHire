@@ -438,7 +438,7 @@ export async function getMe(req, res) {
 export async function updateProfile(req, res) {
   try {
     const userId = req.user.id;
-    const { name, email, currentRole, targetRole } = req.body;
+    const { name, email, currentRole, targetRole, github, linkedin, college, bio } = req.body;
 
     if (!name || !email) {
       return res.status(400).json({
@@ -457,14 +457,22 @@ export async function updateProfile(req, res) {
       }
     }
 
+    // Only overwrite the extended profile fields when they are provided, so a
+    // partial update never wipes existing values.
+    const data = {
+      name,
+      email,
+      currentRole: currentRole ?? req.user.currentRole ?? null,
+      targetRole: targetRole ?? req.user.targetRole ?? null,
+    };
+    if (github !== undefined) data.github = github || null;
+    if (linkedin !== undefined) data.linkedin = linkedin || null;
+    if (college !== undefined) data.college = college || null;
+    if (bio !== undefined) data.bio = bio || null;
+
     const updated = await prisma.user.update({
       where: { id: userId },
-      data: {
-        name,
-        email,
-        currentRole: currentRole || null,
-        targetRole: targetRole || null,
-      },
+      data,
       select: {
         id: true,
         name: true,
@@ -475,6 +483,10 @@ export async function updateProfile(req, res) {
         currentRole: true,
         experience: true,
         targetRole: true,
+        github: true,
+        linkedin: true,
+        college: true,
+        bio: true,
         profileImage: true,
       },
     });
@@ -557,6 +569,51 @@ export async function uploadAvatar(req, res) {
 }
 
 // PUT /api/auth/password  
+// Allowed dashboard preferences (kept in sync with the frontend AccentContext).
+const ALLOWED_ACCENTS = new Set(["purple", "blue", "green"]);
+const ALLOWED_THEMES = new Set(["light", "dark"]);
+
+/**
+ * PUT /api/auth/preferences
+ * Persist per-user dashboard preferences (accent color and/or theme) so the
+ * choices are restored on next login. Lightweight — accepts a partial update
+ * and does not require the full profile form, unlike updateProfile.
+ */
+export async function updatePreferences(req, res) {
+  try {
+    const { accentColor, theme } = req.body || {};
+    const data = {};
+
+    if (accentColor !== undefined) {
+      if (!ALLOWED_ACCENTS.has(accentColor)) {
+        return res.status(400).json({ success: false, message: "Invalid accent color." });
+      }
+      data.accentColor = accentColor;
+    }
+    if (theme !== undefined) {
+      if (!ALLOWED_THEMES.has(theme)) {
+        return res.status(400).json({ success: false, message: "Invalid theme." });
+      }
+      data.theme = theme;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ success: false, message: "No valid preference provided." });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { accentColor: true, theme: true },
+    });
+
+    return res.status(200).json({ success: true, ...updated });
+  } catch (error) {
+    console.error("[updatePreferences]", error);
+    return res.status(500).json({ success: false, message: "Failed to save preferences." });
+  }
+}
+
 export async function updatePassword(req, res) {
   try {
     const userId = req.user.id;

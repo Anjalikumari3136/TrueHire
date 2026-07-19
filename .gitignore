@@ -13,6 +13,10 @@ dist-ssr/
 **/.env
 **/.env.*
 
+# ...except the template, which documents what every service needs and holds
+# placeholders only — never real credentials.
+!.env.example
+
 # Logs
 logs/
 *.log

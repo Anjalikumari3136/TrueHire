@@ -116,7 +116,7 @@ export default function OtpPage() {
       localStorage.setItem("truehire_token", data.token);
       localStorage.setItem("truehire_user", JSON.stringify(data.user));
       setSuccess("Email verified! Redirecting…");
-      setTimeout(() => navigate("/dashboard"), 1500);
+      setTimeout(() => navigate("/home", { replace: true }), 1500);
     } catch (err) {
       setError(err?.response?.data?.message || "OTP verification failed. Try again.");
     } finally {

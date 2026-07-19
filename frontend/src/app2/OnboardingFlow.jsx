@@ -6,6 +6,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import ProfileResults from "./components/ProfileResults";
 import JobTarget from "./components/JobTarget";
 import InterviewChat from "./components/InterviewChat";
+import { resumeInterview } from "./api";
 
 /**
  * Post-login flow integrated from frontend2.
@@ -19,6 +20,43 @@ function FlowContent() {
   const [profileData, setProfileData] = useState(null);
   const [interviewSession, setInterviewSession] = useState(null);
   const [jobTargetInit, setJobTargetInit] = useState(null); // { step, form } when returning from OA
+
+  // "Resume Interview" from the dashboard: reuse the previous résumé's analysis
+  // (no re-upload) and jump straight to the round-selection screen so the
+  // candidate continues from the next unlocked round.
+  useEffect(() => {
+    if (sessionStorage.getItem("truehire_resume") !== "1") return;
+    sessionStorage.removeItem("truehire_resume");
+    const token =
+      localStorage.getItem("truehire_token") || sessionStorage.getItem("truehire_token");
+    if (!token) return;
+
+    (async () => {
+      try {
+        const data = await resumeInterview(token);
+        setProfileData(data.profile);
+        // Restore the job context captured when the interview started (same browser).
+        let form = {};
+        try {
+          const ctx = JSON.parse(sessionStorage.getItem("truehire_flow_ctx") || "null");
+          if (ctx) {
+            form = {
+              company: ctx.company,
+              jobDescription: ctx.jobDescription,
+              experience: ctx.experience,
+              roundType: ctx.roundType,
+            };
+          }
+        } catch {
+          /* ignore malformed context */
+        }
+        setJobTargetInit({ step: "round_select", form });
+        setView("job_target");
+      } catch {
+        /* nothing resumable — stay on the upload screen (fresh start) */
+      }
+    })();
+  }, []);
 
   // After the OA round finishes, return the candidate straight to the
   // "Select Interview Round" screen instead of restarting from upload.
@@ -70,6 +108,23 @@ function FlowContent() {
     setView("interview");
   };
 
+  // After a Technical/HR round finishes (but the interview isn't complete),
+  // return to the "Select Interview Round" screen — with the round progress
+  // preserved — so the candidate can take the next now-unlocked round instead
+  // of restarting from résumé upload.
+  const handleBackToRounds = () => {
+    setJobTargetInit({
+      step: "round_select",
+      form: {
+        company: interviewSession?.company,
+        jobDescription: interviewSession?.jobDescription,
+        experience: interviewSession?.experience,
+        roundType: interviewSession?.roundType,
+      },
+    });
+    setView("job_target");
+  };
+
   return (
     <>
       {/* Ambient background glow */}
@@ -98,7 +153,11 @@ function FlowContent() {
         />
       )}
       {view === "interview" && interviewSession && (
-        <InterviewChat sessionData={interviewSession} onBackToDashboard={handleReset} />
+        <InterviewChat
+          sessionData={interviewSession}
+          onBackToDashboard={handleReset}
+          onBackToRounds={handleBackToRounds}
+        />
       )}
     </>
   );

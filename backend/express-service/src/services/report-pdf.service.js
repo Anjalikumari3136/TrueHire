@@ -26,8 +26,8 @@ const COLORS = {
   zebra: "#f9fafb",
 };
 
-const PAGE = { size: "A4", margin: 50 };
-const FOOTER_RESERVE = 46; // vertical space kept free at the bottom for the footer
+const PAGE = { size: "A4", margin: 40 };
+const FOOTER_RESERVE = 34; // vertical space kept free at the bottom for the footer
 
 // ── Small safe helpers ──────────────────────────────────────────────────────
 const s = (v, fallback = "—") => {
@@ -36,6 +36,16 @@ const s = (v, fallback = "—") => {
   return str.length ? str : fallback;
 };
 const arr = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined && String(x).trim()) : []);
+// Values that carry no information — printing them just inflates the report.
+const PLACEHOLDER =
+  /^(—|-|n\/?a|none|null|undefined|not\s+(assessed|attempted|available|applicable|demonstrated|provided|evaluated)\b.*)$/i;
+
+/** True when a value is worth printing (keeps absent data out of the PDF). */
+const hasVal = (v) => {
+  if (v === null || v === undefined) return false;
+  const t = String(v).trim();
+  return t !== "" && !PLACEHOLDER.test(t);
+};
 const num = (v) => (typeof v === "number" && !Number.isNaN(v) ? v : Number(v) || 0);
 
 function scoreColor(score) {
@@ -70,103 +80,114 @@ export function generateReportPdf(report = {}, candidate = {}) {
       };
 
       // ── Report title band (first page) ──────────────────────────────────
-      doc.rect(0, 0, doc.page.width, 96).fill(COLORS.brand);
+      doc.rect(0, 0, doc.page.width, 62).fill(COLORS.brand);
       doc
         .fillColor(COLORS.white)
         .font("Helvetica-Bold")
-        .fontSize(22)
-        .text("TRUEHIRE AI INTERVIEW REPORT", left, 34, { width: contentW });
+        .fontSize(17)
+        .text("TRUEHIRE AI INTERVIEW REPORT", left, 18, { width: contentW });
       doc
         .font("Helvetica")
-        .fontSize(10)
+        .fontSize(8.5)
         .fillColor("#dbeafe")
-        .text("Confidential candidate assessment", left, 64, { width: contentW });
-      doc.y = 120;
+        .text("Confidential candidate assessment", left, 40, { width: contentW });
+      doc.y = 76;
       doc.fillColor(COLORS.ink);
 
       // ── Section heading (filled bar) ────────────────────────────────────
       const heading = (title) => {
-        ensure(40);
+        ensure(34);
         const y = doc.y;
-        doc.rect(left, y, contentW, 26).fill(COLORS.brandLight);
-        doc.rect(left, y, 4, 26).fill(COLORS.brand);
+        doc.rect(left, y, contentW, 19).fill(COLORS.brandLight);
+        doc.rect(left, y, 3, 19).fill(COLORS.brand);
         doc
           .fillColor(COLORS.brand)
           .font("Helvetica-Bold")
-          .fontSize(12)
-          .text(title.toUpperCase(), left + 14, y + 7, { width: contentW - 20 });
+          .fontSize(9.5)
+          .text(title.toUpperCase(), left + 11, y + 5.5, { width: contentW - 20 });
         doc.fillColor(COLORS.ink);
-        doc.y = y + 26 + 10;
+        doc.y = y + 19 + 4;
       };
 
       // ── Key/value grid (two columns) ────────────────────────────────────
       const kvGrid = (pairs) => {
         const colW = contentW / 2;
-        const rowH = 20;
+        const rowH = 14;
         for (let i = 0; i < pairs.length; i += 2) {
           ensure(rowH);
           const y = doc.y;
           const cells = [pairs[i], pairs[i + 1]].filter(Boolean);
           cells.forEach((pair, ci) => {
             const x = left + ci * colW;
-            doc.font("Helvetica-Bold").fontSize(9).fillColor(COLORS.sub).text(pair[0].toUpperCase(), x, y, { width: 120 });
-            doc.font("Helvetica").fontSize(10).fillColor(COLORS.ink).text(s(pair[1]), x + 122, y, { width: colW - 132 });
+            doc.font("Helvetica-Bold").fontSize(7.5).fillColor(COLORS.sub).text(pair[0].toUpperCase(), x, y + 2, { width: 76, lineBreak: false });
+            doc.font("Helvetica").fontSize(8).fillColor(COLORS.ink).text(s(pair[1]), x + 78, y + 1.5, { width: colW - 86, lineBreak: false, ellipsis: true });
           });
           doc.y = y + rowH;
         }
-        doc.moveDown(0.4);
+        doc.moveDown(0.3);
       };
 
       // ── Two-column label/value table (per-round competencies) ───────────
-      const table = (rows) => {
-        const labelW = 150;
+      // Rows without a real value are dropped so absent data never takes up
+      // space. Returns false when there was nothing to draw.
+      const table = (allRows) => {
+        const rows = allRows.filter(([, v]) => hasVal(v));
+        if (!rows.length) return false;
+        const labelW = 122;
         const valX = left + labelW;
         const valW = contentW - labelW;
         rows.forEach(([label, value], idx) => {
           const text = s(value);
-          const vh = doc.font("Helvetica").fontSize(10).heightOfString(text, { width: valW - 16 });
-          const rowH = Math.max(22, vh + 10);
+          const vh = doc.font("Helvetica").fontSize(8.5).heightOfString(text, { width: valW - 14 });
+          const rowH = Math.max(15, vh + 5);
           ensure(rowH);
           const y = doc.y;
           if (idx % 2 === 0) doc.rect(left, y, contentW, rowH).fill(COLORS.zebra);
           doc.rect(left, y, contentW, rowH).lineWidth(0.5).stroke(COLORS.line);
-          doc.font("Helvetica-Bold").fontSize(9.5).fillColor(COLORS.ink).text(label, left + 8, y + 6, { width: labelW - 12 });
-          doc.font("Helvetica").fontSize(10).fillColor(COLORS.ink).text(text, valX + 8, y + 6, { width: valW - 16 });
+          doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.ink).text(label, left + 7, y + 3.5, { width: labelW - 11 });
+          doc.font("Helvetica").fontSize(8.5).fillColor(COLORS.ink).text(text, valX + 7, y + 3.5, { width: valW - 14 });
           doc.y = y + rowH;
         });
-        doc.moveDown(0.6);
+        doc.moveDown(0.3);
+        return true;
       };
 
-      // ── Bullet list ─────────────────────────────────────────────────────
-      const bullets = (items, empty = "No items recorded.") => {
+      // ── Bullet list — renders nothing (and reports false) when empty ─────
+      const bullets = (items) => {
         const list = arr(items);
-        if (!list.length) {
-          ensure(18);
-          doc.font("Helvetica-Oblique").fontSize(10).fillColor(COLORS.sub).text(empty, left + 4, doc.y, { width: contentW - 8 });
-          doc.moveDown(0.6);
-          doc.fillColor(COLORS.ink);
-          return;
-        }
+        if (!list.length) return false;
         list.forEach((item) => {
           const text = s(item);
-          const th = doc.font("Helvetica").fontSize(10).heightOfString(text, { width: contentW - 24 });
+          const th = doc.font("Helvetica").fontSize(8.5).heightOfString(text, { width: contentW - 20 });
           ensure(th + 6);
           const y = doc.y;
-          doc.circle(left + 6, y + 6, 2).fill(COLORS.brand);
-          doc.font("Helvetica").fontSize(10).fillColor(COLORS.ink).text(text, left + 16, y, { width: contentW - 24 });
-          doc.y = Math.max(doc.y, y + th) + 4;
+          doc.circle(left + 5, y + 4.5, 1.6).fill(COLORS.brand);
+          doc.font("Helvetica").fontSize(8.5).fillColor(COLORS.ink).text(text, left + 13, y, { width: contentW - 20 });
+          doc.y = Math.max(doc.y, y + th) + 1.5;
         });
-        doc.moveDown(0.4);
+        doc.moveDown(0.2);
+        return true;
+      };
+
+      /** Sub-heading + bullet list; skipped entirely when the list is empty. */
+      const bulletBlock = (title, items) => {
+        if (!arr(items).length) return false;
+        ensure(16);
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(COLORS.ink).text(title, left, doc.y);
+        doc.moveDown(0.15);
+        bullets(items);
+        return true;
       };
 
       // ── Paragraph ───────────────────────────────────────────────────────
       const paragraph = (text) => {
         const t = s(text, "");
-        if (!t) return;
-        const th = doc.font("Helvetica").fontSize(10.5).heightOfString(t, { width: contentW });
+        if (!t) return false;
+        const th = doc.font("Helvetica").fontSize(9).heightOfString(t, { width: contentW });
         ensure(th);
-        doc.font("Helvetica").fontSize(10.5).fillColor(COLORS.ink).text(t, left, doc.y, { width: contentW, align: "justify" });
-        doc.moveDown(0.6);
+        doc.font("Helvetica").fontSize(9).fillColor(COLORS.ink).text(t, left, doc.y, { width: contentW, align: "justify" });
+        doc.moveDown(0.3);
+        return true;
       };
 
       // =====================================================================
@@ -187,9 +208,9 @@ export function generateReportPdf(report = {}, candidate = {}) {
       // =====================================================================
       heading("Overall Performance");
       {
-        ensure(64);
+        ensure(50);
         const y = doc.y;
-        const boxH = 56;
+        const boxH = 42;
         doc.rect(left, y, contentW, boxH).lineWidth(1).stroke(COLORS.line);
         const col = contentW / 3;
         const cells = [
@@ -200,114 +221,134 @@ export function generateReportPdf(report = {}, candidate = {}) {
         cells.forEach(([label, value, color], i) => {
           const x = left + i * col;
           if (i > 0) doc.moveTo(x, y + 10).lineTo(x, y + boxH - 10).lineWidth(0.5).stroke(COLORS.line);
-          doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.sub).text(label, x + 12, y + 12, { width: col - 20 });
-          doc.font("Helvetica-Bold").fontSize(14).fillColor(color).text(value, x + 12, y + 28, { width: col - 20 });
+          doc.font("Helvetica-Bold").fontSize(7).fillColor(COLORS.sub).text(label, x + 10, y + 8, { width: col - 16, lineBreak: false });
+          doc.font("Helvetica-Bold").fontSize(11.5).fillColor(color).text(value, x + 10, y + 21, { width: col - 16 });
         });
         doc.fillColor(COLORS.ink);
-        doc.y = y + boxH + 12;
+        doc.y = y + boxH + 8;
       }
       paragraph(report.overall_summary);
+
+      // Renders `title` + body only when the body actually has content, so a
+      // section with no data never occupies space (or a whole page).
+      const section = (title, body) => {
+        const y0 = doc.y;
+        const page0 = doc.bufferedPageRange().count;
+        heading(title);
+        if (!body()) {
+          // Nothing was drawn → roll the heading back.
+          if (doc.bufferedPageRange().count === page0) doc.y = y0;
+          return false;
+        }
+        return true;
+      };
 
       // =====================================================================
       // RESUME ANALYSIS
       // =====================================================================
       const ra = report.resume_analysis || {};
-      heading("Resume Analysis");
-      table([
-        ["Resume Score", `${num(ra.resume_score).toFixed(0)}/100`],
-        ["Skills Detected", arr(ra.skills_detected).join(", ")],
-        ["Technologies", arr(ra.technologies).join(", ")],
-      ]);
-      doc.font("Helvetica-Bold").fontSize(10).fillColor(COLORS.ink).text("Projects", left, doc.y); doc.moveDown(0.2);
-      bullets(ra.projects, "No projects listed.");
-      doc.font("Helvetica-Bold").fontSize(10).fillColor(COLORS.ink).text("Strengths", left, doc.y); doc.moveDown(0.2);
-      bullets(ra.strengths);
-      doc.font("Helvetica-Bold").fontSize(10).fillColor(COLORS.ink).text("Weaknesses", left, doc.y); doc.moveDown(0.2);
-      bullets(ra.weaknesses);
+      section("Resume Analysis", () => {
+        let drew = table([
+          ["Resume Score", num(ra.resume_score) ? `${num(ra.resume_score).toFixed(0)}/100` : ""],
+          ["Skills Detected", arr(ra.skills_detected).join(", ")],
+          ["Technologies", arr(ra.technologies).join(", ")],
+        ]);
+        drew = bulletBlock("Projects", ra.projects) || drew;
+        drew = bulletBlock("Strengths", ra.strengths) || drew;
+        drew = bulletBlock("Weaknesses", ra.weaknesses) || drew;
+        return drew;
+      });
 
       // =====================================================================
       // OA ROUND
       // =====================================================================
       const oa = report.oa_round || {};
-      heading("OA Round");
-      table([
-        ["Score", `${num(oa.score).toFixed(0)}/100`],
-        ["Questions Attempted", s(oa.questions_attempted, "0")],
-        ["Correct Answers", s(oa.correct_answers, "0")],
-        ["Time Management", oa.time_management],
-        ["Problem Solving", oa.problem_solving],
-        ["AI Feedback", oa.ai_feedback],
-      ]);
+      section("OA Round", () =>
+        table([
+          ["Score", num(oa.score) ? `${num(oa.score).toFixed(0)}/100` : ""],
+          ["Questions Attempted", num(oa.questions_attempted) ? String(oa.questions_attempted) : ""],
+          ["Correct Answers", num(oa.correct_answers) ? String(oa.correct_answers) : ""],
+          ["Time Management", oa.time_management],
+          ["Problem Solving", oa.problem_solving],
+          ["AI Feedback", oa.ai_feedback],
+        ])
+      );
 
       // =====================================================================
       // TECHNICAL ROUND
       // =====================================================================
       const tr = report.technical_round || {};
-      heading("Technical Round");
-      table([
-        ["Coding Skills", tr.coding_skills],
-        ["DSA", tr.dsa],
-        ["Frontend", tr.frontend],
-        ["Backend", tr.backend],
-        ["Database", tr.database],
-        ["API Design", tr.api_design],
-        ["Debugging", tr.debugging],
-        ["AI Feedback", tr.ai_feedback],
-      ]);
+      section("Technical Round", () =>
+        table([
+          ["Coding Skills", tr.coding_skills],
+          ["DSA", tr.dsa],
+          ["Frontend", tr.frontend],
+          ["Backend", tr.backend],
+          ["Database", tr.database],
+          ["API Design", tr.api_design],
+          ["Debugging", tr.debugging],
+          ["AI Feedback", tr.ai_feedback],
+        ])
+      );
 
       // =====================================================================
       // HR ROUND
       // =====================================================================
       const hr = report.hr_round || {};
-      heading("HR Round");
-      table([
-        ["Communication", hr.communication],
-        ["Confidence", hr.confidence],
-        ["Leadership", hr.leadership],
-        ["Teamwork", hr.teamwork],
-        ["Behaviour", hr.behaviour],
-        ["AI Feedback", hr.ai_feedback],
-      ]);
+      section("HR Round", () =>
+        table([
+          ["Communication", hr.communication],
+          ["Confidence", hr.confidence],
+          ["Leadership", hr.leadership],
+          ["Teamwork", hr.teamwork],
+          ["Behaviour", hr.behaviour],
+          ["AI Feedback", hr.ai_feedback],
+        ])
+      );
 
       // =====================================================================
       // OVERALL STRENGTHS / IMPROVEMENTS / RECOMMENDATIONS / SUMMARY
       // =====================================================================
-      heading("Overall Strengths");
-      bullets(report.strengths);
-
-      heading("Areas of Improvement");
-      bullets(report.areas_to_improve && report.areas_to_improve.length ? report.areas_to_improve : report.weaknesses);
-
-      heading("Learning Recommendations");
-      bullets(report.learning_recommendations);
-
-      heading("AI Career Suggestions");
-      bullets(report.career_suggestions);
-
-      heading("Final Summary");
-      paragraph(report.final_summary || report.overall_summary);
+      section("Overall Strengths", () => bullets(report.strengths));
+      section("Areas of Improvement", () =>
+        bullets(arr(report.areas_to_improve).length ? report.areas_to_improve : report.weaknesses)
+      );
+      section("Learning Recommendations", () => bullets(report.learning_recommendations));
+      section("AI Career Suggestions", () => bullets(report.career_suggestions));
+      section("Final Summary", () => paragraph(report.final_summary || report.overall_summary));
 
       // =====================================================================
       // FOOTER on every page (bufferPages)
       // =====================================================================
+      // IMPORTANT: every footer draw must use `lineBreak: false`. Without it
+      // pdfkit's line wrapper decides the next line doesn't fit near the page
+      // bottom and calls continueOnNewPage — appending a BLANK page per page
+      // (which is what was doubling the report's length).
       const range = doc.bufferedPageRange(); // { start, count }
       const genTs = s(candidate.generatedAt, new Date().toISOString());
+      const footOpts = { lineBreak: false, height: 10 };
       for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
-        const fy = doc.page.height - doc.page.margins.bottom - 24;
+        const fy = doc.page.height - doc.page.margins.bottom - 20;
         doc.lineWidth(0.5).moveTo(left, fy).lineTo(right, fy).stroke(COLORS.line);
         doc
           .font("Helvetica")
-          .fontSize(8)
+          .fontSize(7.5)
           .fillColor(COLORS.sub)
           .text(
             `Generated by TrueHire AI  ·  Interview ID: ${s(candidate.interviewId)}  ·  ${genTs}  ·  Report ${candidate.reportVersion ? "v" + candidate.reportVersion : "v1"}`,
             left,
             fy + 6,
-            { width: contentW - 60, lineBreak: false }
+            { ...footOpts, width: contentW - 70 }
           );
-        doc.text(`Page ${i - range.start + 1} of ${range.count}`, right - 60, fy + 6, { width: 60, align: "right" });
+        doc.text(`Page ${i - range.start + 1} of ${range.count}`, right - 65, fy + 6, {
+          ...footOpts,
+          width: 65,
+          align: "right",
+        });
       }
+      // Flush so no further pages can be appended after the footers.
+      doc.flushPages();
 
       doc.end();
     } catch (err) {

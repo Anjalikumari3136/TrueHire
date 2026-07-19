@@ -10,6 +10,7 @@ import {
   resetPassword,
   getMe,
   updateProfile,
+  updatePreferences,
   updatePassword,
   deleteAccount,
   uploadAvatar,
@@ -43,6 +44,7 @@ router.post("/reset-password", resetPassword);
 
 router.get("/me", authenticate, getMe);
 router.put("/profile", authenticate, updateProfile);
+router.put("/preferences", authenticate, updatePreferences);
 router.put("/password", authenticate, updatePassword);
 router.delete("/account", authenticate, deleteAccount);
 router.post("/avatar", authenticate, upload.single("avatar"), uploadAvatar);

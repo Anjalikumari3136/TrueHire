@@ -1,12 +1,27 @@
-fastapi
-uvicorn[standard]
-python-multipart
-langchain-anthropic
-langgraph
-pypdf2
-httpx
-python-dotenv
-pydantic[email]
-pyjwt
-passlib[bcrypt]
-google-genai
+# Pinned to the versions currently working in local development, so a deploy
+# build cannot silently pull in a breaking major release.
+#
+# NOTE: `langchain-anthropic` was removed — nothing in this service imports
+# langchain or anthropic. The AI workflow uses LangGraph + google-genai (Gemini),
+# so that line was pulling the entire Anthropic SDK into the build for nothing.
+
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+python-multipart==0.0.32
+
+# AI workflow (the graph/ package)
+langgraph==1.2.9
+langchain-core==1.4.9
+google-genai==2.12.1
+
+# Résumé parsing + outbound HTTP
+PyPDF2==3.0.1
+httpx==0.28.1
+
+# Config, models, auth
+python-dotenv==1.2.2
+pydantic==2.13.4
+email-validator==2.3.0
+PyJWT==2.13.0
+passlib==1.7.4
+bcrypt==5.0.0

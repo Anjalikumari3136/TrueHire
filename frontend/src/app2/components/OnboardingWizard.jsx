@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { buildProfile } from '../api';
+import { resetInterviewProgress } from '../../services/roundProgress';
 
 /**
  * Clean GitHub username from a URL if the user pastes a full URL.
@@ -129,6 +130,9 @@ export default function OnboardingWizard({ onResult }) {
       };
 
       const data = await buildProfile(token, file, cleanedGithubUsername, extraFields);
+      // Build Profile begins a brand-new interview session — clear any previous
+      // interview's client state so all 3 rounds (OA → Technical → HR) start fresh.
+      resetInterviewProgress();
       onResult(data);
     } catch (err) {
       setError(err.message || 'Something went wrong while building your profile.');

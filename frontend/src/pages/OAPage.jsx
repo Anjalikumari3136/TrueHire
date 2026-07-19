@@ -6,8 +6,12 @@ import CodingEditor from "../components/CodingEditor";
 import QuestionNavigator from "../components/QuestionNavigator";
 import Timer from "../components/Timer";
 import ConfirmSubmitModal from "../components/ConfirmSubmitModal";
-import { startOA, submitOA } from "../services/oaApi";
+import { startOA, submitOA, getOAReport } from "../services/oaApi";
 import { markRoundComplete } from "../services/roundProgress";
+import RoundReportView, {
+  RoundReportLoading,
+  RoundReportError,
+} from "../app2/components/RoundReportView";
 
 /**
  * OAPage — complete Online Assessment workflow.
@@ -31,7 +35,9 @@ export default function OAPage() {
   const navigate = useNavigate();
 
   // Session / lifecycle
-  const [status, setStatus] = useState("loading"); // loading | error | active | submitting
+  const [status, setStatus] = useState("loading"); // loading | error | active | submitting | report
+  const [oaReport, setOaReport] = useState(null);
+  const [reportError, setReportError] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [session, setSession] = useState(null); // { session_id, questions, duration_minutes, started_at }
 
@@ -193,10 +199,19 @@ export default function OAPage() {
       markRoundComplete("OA"); // unlocks the Technical round
       sessionStorage.removeItem(STORAGE_KEY);
       setShowConfirm(false);
-      setToast(true);
-      // Redirect back to the "Select Interview Round" screen (STEP 12).
-      sessionStorage.setItem("truehire_return_round_select", "1");
-      setTimeout(() => navigate("/dashboard"), 1300);
+
+      // Automatically generate + show the OA evaluation report, mirroring the
+      // Technical round (which shows its report right after the round ends).
+      setStatus("report");
+      setReportError("");
+      try {
+        setOaReport(await getOAReport());
+      } catch (err) {
+        setReportError(
+          err.response?.data?.message || err.message || "Failed to generate the OA report."
+        );
+      }
+      return;
     } catch (err) {
       submittedRef.current = false;
       setStatus("active");
@@ -222,6 +237,69 @@ export default function OAPage() {
   };
 
   // ── Loading state (STEP 16) ────────────────────────────────────────────────
+  // ── OA evaluation report (same UI/UX as the Technical round report) ────────
+  if (status === "report") {
+    if (reportError) {
+      return (
+        <RoundReportError
+          message={reportError}
+          onRetry={async () => {
+            setReportError("");
+            setOaReport(null);
+            try {
+              setOaReport(await getOAReport());
+            } catch (err) {
+              setReportError(
+                err.response?.data?.message || err.message || "Failed to generate the OA report."
+              );
+            }
+          }}
+        />
+      );
+    }
+    if (!oaReport) {
+      return (
+        <RoundReportLoading
+          title="Compiling OA Report..."
+          subtitle="Please wait while Gemini evaluates your submitted code and grades your assessment."
+        />
+      );
+    }
+    return (
+      <RoundReportView
+        report={oaReport}
+        title="OA Evaluation Report"
+        subtitle="Consolidated insights from your Online Assessment submission."
+        scoreScale={100}
+        actions={
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 animate-fade-in-up" style={{ animationDelay: "0.4s" }}>
+            <button
+              onClick={() => {
+                sessionStorage.setItem("truehire_return_round_select", "1");
+                navigate("/dashboard");
+              }}
+              className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600
+                         hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]
+                         hover:shadow-[0_0_30px_rgba(99,102,241,0.35)] transition-all duration-300 cursor-pointer
+                         flex items-center justify-center gap-2"
+            >
+              Continue to Next Round
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => navigate("/home")}
+              className="py-3 px-8 rounded-xl font-semibold text-sm text-text-primary border border-white/10 hover:bg-white/5 transition-all duration-300 cursor-pointer"
+            >
+              Return to Dashboard
+            </button>
+          </div>
+        }
+      />
+    );
+  }
+
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">

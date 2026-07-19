@@ -12,6 +12,8 @@ ENV/
 # Environment variables
 .env
 .env.*
+# ...but keep the placeholder-only template.
+!.env.example
 
 # Test / coverage artifacts
 .pytest_cache/

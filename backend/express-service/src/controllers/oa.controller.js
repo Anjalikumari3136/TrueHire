@@ -4,6 +4,8 @@ import prisma from "../config/prisma.js";
 import { generateReportPdf } from "../services/report-pdf.service.js";
 import { uploadReportPdf, downloadReportPdf } from "../services/report-storage.service.js";
 import { sendInterviewReportEmail } from "../services/mail.service.js";
+import { logActivity } from "../services/activity.service.js";
+import { saveRoundResult, markRoundCompleted } from "../services/round-result.service.js";
 
 /**
  * OA (Online Assessment) controller.
@@ -23,6 +25,52 @@ const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safeFileName(name) {
   return String(name || "Candidate").replace(/[^a-zA-Z0-9]+/g, "_") || "Candidate";
+}
+
+/** Wrap a handler result as { status, body } so it can be shared by callers. */
+const out = (status, body) => ({ status, body });
+
+/**
+ * In-flight final-report work, keyed by userId. Concurrent requests share the
+ * SAME promise, so the report is generated once and the email sent once even if
+ * the client fires the endpoint multiple times simultaneously.
+ */
+const inFlightReports = new Map();
+
+/**
+ * Mark the user's current active interview session as completed and link it to
+ * the report just produced. Non-fatal — a session bookkeeping failure must not
+ * break the report response.
+ */
+async function completeActiveSession(userId, { interviewId, overallScore, reportAvailable, emailSent }) {
+  try {
+    // Prefer the in-progress session; fall back to the latest one so the report
+    // is ALWAYS linked (this is what makes generate-once/email-once reliable).
+    const active =
+      (await prisma.interviewSession.findFirst({
+        where: { userId, status: "in_progress" },
+        orderBy: { startedAt: "desc" },
+      })) ||
+      (await prisma.interviewSession.findFirst({
+        where: { userId },
+        orderBy: { startedAt: "desc" },
+      }));
+    if (!active) return;
+    await prisma.interviewSession.update({
+      where: { id: active.id },
+      data: {
+        status: "completed",
+        currentRound: "HR",
+        completedAt: new Date(),
+        reportInterviewId: interviewId ?? active.reportInterviewId,
+        overallScore: typeof overallScore === "number" ? overallScore : active.overallScore,
+        reportAvailable: reportAvailable ?? active.reportAvailable,
+        emailSent: emailSent ?? active.emailSent,
+      },
+    });
+  } catch (err) {
+    console.error("[completeActiveSession] non-fatal:", err.message);
+  }
 }
 
 function serializeMeta(row) {
@@ -46,6 +94,18 @@ export async function startOA(req, res) {
       {},
       { headers: { Authorization: req.headers.authorization }, timeout: 120000 }
     );
+
+    // Persist the generated question set. FastAPI holds it in memory only, so a
+    // restart mid-assessment used to lose the candidate's paper entirely.
+    // On `resumed: true` FastAPI returns the SAME questions, so re-saving is a
+    // no-op update rather than a change.
+    await saveRoundResult(req.user.id, "OA", {
+      aiSessionId: data?.session_id ?? undefined,
+      questionsJson: Array.isArray(data?.questions) ? data.questions : undefined,
+      startedAt: data?.started_at ? new Date(data.started_at) : undefined,
+      status: "in_progress",
+    });
+
     return res.status(200).json(data);
   } catch (err) {
     const status = err.response?.status || 502;
@@ -64,6 +124,22 @@ export async function submitOA(req, res) {
       headers: { Authorization: req.headers.authorization },
       timeout: 30000,
     });
+
+    // Persist the actual code the candidate wrote + how long they took. This was
+    // previously never stored anywhere — only the AI's prose summary survived.
+    const body = req.body || {};
+    await saveRoundResult(req.user.id, "OA", {
+      aiSessionId: body.session_id ?? undefined,
+      answersJson: Array.isArray(body.answers) ? body.answers : undefined,
+      language: body.language ?? undefined,
+      startedAt: body.started_at ? new Date(body.started_at) : undefined,
+      submittedAt: body.ended_at ? new Date(body.ended_at) : new Date(),
+      timeTakenSeconds:
+        typeof body.time_taken_seconds === "number" ? body.time_taken_seconds : undefined,
+      status: "submitted",
+    });
+    await markRoundCompleted(req.user.id, "OA");
+
     return res.status(200).json(data);
   } catch (err) {
     const status = err.response?.status || 502;
@@ -71,6 +147,35 @@ export async function submitOA(req, res) {
       err.response?.data?.detail ||
       err.response?.data?.message ||
       "Failed to submit assessment.";
+    return res.status(status).json({ success: false, message });
+  }
+}
+
+// ── POST /api/oa/report → FastAPI POST /api/oa/report ────────────────────────
+// OA round evaluation report (mirrors the Technical round's report flow).
+export async function oaRoundReport(req, res) {
+  try {
+    const { data } = await axios.post(
+      `${FASTAPI_URL}/api/oa/report`,
+      {},
+      { headers: { Authorization: req.headers.authorization }, timeout: 120000 }
+    );
+
+    // Persist the OA round's own evaluation. Only the final CONSOLIDATED report
+    // was ever stored, so individual round reports could not be re-opened later.
+    await saveRoundResult(req.user.id, "OA", {
+      reportJson: data ?? undefined,
+      score: typeof data?.overall_score === "number" ? data.overall_score : undefined,
+      status: "evaluated",
+    });
+
+    return res.status(200).json(data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    const message =
+      err.response?.data?.detail ||
+      err.response?.data?.message ||
+      "Unable to generate the OA report.";
     return res.status(status).json({ success: false, message });
   }
 }
@@ -91,22 +196,57 @@ export async function submitOA(req, res) {
  *   - Report generation fails  → no email, log, return error.
  *   - PDF generation fails      → keep JSON, mark completed, log, don't crash.
  *   - Email sending fails       → everything stays stored, log, no rollback.
+ *
+ * Concurrency: requests are de-duplicated per user (see `finalReport`), because
+ * the report page can fire this endpoint twice at once (React StrictMode
+ * double-invokes effects in dev, remounts/reloads can do the same). Without that
+ * guard both calls pass the "already generated?" check before either finishes,
+ * producing two reports and TWO emails.
  */
-export async function finalReport(req, res) {
+async function buildFinalReport(req) {
   const userId = req.user.id;
 
   try {
     const resume = await prisma.resume.findUnique({ where: { userId } });
     const currentResumeUrl = resume?.resumeUrl || null;
 
-    // ── 1. Generate-once: reuse the stored report for this résumé session ──
     const latest = await prisma.interviewReport.findFirst({
       where: { userId },
       orderBy: { reportVersion: "desc" },
     });
 
-    if (latest && latest.reportPdfPath && latest.resumeSnapshotUrl === currentResumeUrl) {
-      return res.status(200).json({
+    // ── 1. Generate-once is scoped to the INTERVIEW SESSION ────────────────
+    // Each interview session produces exactly ONE report and ONE email. We must
+    // NOT key this on the résumé snapshot: the interview flow uploads the résumé
+    // straight to Build Profile and never writes the Resume table, so that value
+    // is identical across interviews and would wrongly reuse the first report
+    // forever (which is why later interviews never got an email).
+    const currentSession = await prisma.interviewSession.findFirst({
+      where: { userId },
+      orderBy: { startedAt: "desc" },
+    });
+
+    if (currentSession) {
+      if (currentSession.reportInterviewId) {
+        const existing = await prisma.interviewReport.findUnique({
+          where: { interviewId: currentSession.reportInterviewId },
+        });
+        if (existing) {
+          return out(200, {
+            report: existing.reportJson,
+            completed_rounds: existing.completedRounds,
+            interview_id: existing.interviewId,
+            report_version: existing.reportVersion,
+            pdf_available: !!existing.reportPdfPath,
+            email_sent: existing.reportEmailSent,
+            reused: true,
+          });
+        }
+      }
+      // This session has no report yet → generate a fresh one (and email it).
+    } else if (latest && latest.reportPdfPath && latest.resumeSnapshotUrl === currentResumeUrl) {
+      // Legacy fallback for data created before interview sessions existed.
+      return out(200, {
         report: latest.reportJson,
         completed_rounds: latest.completedRounds,
         interview_id: latest.interviewId,
@@ -134,7 +274,7 @@ export async function finalReport(req, res) {
         err.response?.data?.message ||
         "Unable to generate final report.";
       console.error("[finalReport] report generation failed:", message);
-      return res.status(status).json({ success: false, message });
+      return out(status, { success: false, message });
     }
 
     const report = fastapiData.report || {};
@@ -152,6 +292,7 @@ export async function finalReport(req, res) {
       data: {
         userId,
         interviewId,
+        interviewSessionId: currentSession?.interviewSessionId || null,
         resumeName: resume?.resumeName || null,
         resumeSnapshotUrl: currentResumeUrl,
         reportJson: report,
@@ -178,10 +319,13 @@ export async function finalReport(req, res) {
         where: { id: row.id },
         data: { reportPdfPath: pdfPath },
       });
+      await logActivity(userId, "interview_completed", "Interview completed", { interviewId });
+      await logActivity(userId, "report_generated", "Report generated", { interviewId });
     } catch (pdfErr) {
       console.error("[finalReport] PDF generation/storage failed:", pdfErr.message);
       // Interview stays completed and the report JSON is stored — just no PDF/email.
-      return res.status(200).json({
+      await completeActiveSession(userId, { interviewId, overallScore, reportAvailable: false, emailSent: false });
+      return out(200, {
         report,
         completed_rounds: completedRounds,
         interview_id: interviewId,
@@ -206,11 +350,15 @@ export async function finalReport(req, res) {
         where: { id: row.id },
         data: { reportEmailSent: true, reportEmailSentAt: new Date() },
       });
+      await logActivity(userId, "report_email_sent", "Report emailed to you", { interviewId });
     } catch (mailErr) {
       console.error("[finalReport] email send failed (non-fatal):", mailErr.message);
     }
 
-    return res.status(200).json({
+    // Mark the active session completed + link the report.
+    await completeActiveSession(userId, { interviewId, overallScore, reportAvailable: true, emailSent });
+
+    return out(200, {
       report,
       completed_rounds: completedRounds,
       interview_id: interviewId,
@@ -220,9 +368,33 @@ export async function finalReport(req, res) {
     });
   } catch (err) {
     console.error("[finalReport] unexpected error:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to finalize interview report." });
+    return out(500, { success: false, message: "Failed to finalize interview report." });
+  }
+}
+
+/**
+ * POST /api/oa/final-report
+ *
+ * Thin wrapper that de-duplicates concurrent requests per user. The report page
+ * can fire this twice at once (React StrictMode double-invokes effects in dev;
+ * remounts/reloads/double-clicks can too). Both calls would otherwise pass the
+ * "already generated?" check before either finished — producing two reports and
+ * sending the email TWICE. Sharing one in-flight promise guarantees the report
+ * is generated once and the candidate is emailed exactly once.
+ */
+export async function finalReport(req, res) {
+  const userId = req.user.id;
+  try {
+    let work = inFlightReports.get(userId);
+    if (!work) {
+      work = buildFinalReport(req).finally(() => inFlightReports.delete(userId));
+      inFlightReports.set(userId, work);
+    }
+    const { status, body } = await work;
+    return res.status(status).json(body);
+  } catch (err) {
+    console.error("[finalReport] unexpected error:", err);
+    return res.status(500).json({ success: false, message: "Failed to finalize interview report." });
   }
 }
 
@@ -248,6 +420,36 @@ export async function getReport(req, res) {
     });
   } catch (err) {
     console.error("[getReport] error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load report." });
+  }
+}
+
+/**
+ * GET /api/oa/report/:interviewId → a specific stored report (for the
+ * /dashboard/report/:interviewId deep-link). Ownership enforced. Read-only.
+ */
+export async function getReportById(req, res) {
+  try {
+    const row = await prisma.interviewReport.findUnique({
+      where: { interviewId: String(req.params.interviewId) },
+    });
+
+    if (!row) {
+      return res.status(404).json({ success: false, message: "Report not found." });
+    }
+    if (row.userId !== req.user.id) {
+      return res
+        .status(403)
+        .json({ success: false, message: "You are not allowed to access this report." });
+    }
+
+    return res.status(200).json({
+      report: row.reportJson,
+      completed_rounds: row.completedRounds,
+      ...serializeMeta(row),
+    });
+  } catch (err) {
+    console.error("[getReportById] error:", err);
     return res.status(500).json({ success: false, message: "Failed to load report." });
   }
 }
@@ -303,6 +505,8 @@ export async function downloadReport(req, res) {
 
     const buffer = await downloadReportPdf(row.reportPdfPath);
     const fileName = `TrueHire_Interview_Report_${safeFileName(req.user.name)}.pdf`;
+
+    await logActivity(userId, "report_downloaded", "Report downloaded", { interviewId: row.interviewId });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);

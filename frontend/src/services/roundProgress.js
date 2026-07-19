@@ -27,6 +27,24 @@ export function markRoundComplete(round) {
 }
 
 /**
+ * Reset ALL interview-scoped client state so a brand-new interview starts fresh
+ * across every round (OA → Technical → HR). Called right after Build Profile
+ * completes, since each résumé upload begins a completely new interview session.
+ * Clears the round-progress gate and any cached OA/flow state, so OA re-runs
+ * from scratch and Technical/HR are locked again until their prerequisites pass.
+ */
+export function resetInterviewProgress() {
+  try {
+    localStorage.removeItem(KEY); // round-progress gate (OA/Technical/HR)
+    sessionStorage.removeItem("truehire_oa_state"); // cached OA questions/answers
+    sessionStorage.removeItem("truehire_flow_ctx"); // onboarding flow context
+    sessionStorage.removeItem("truehire_return_round_select");
+  } catch {
+    /* storage unavailable — nothing to reset */
+  }
+}
+
+/**
  * A round is unlocked only when all rounds before it in ROUND_ORDER are done.
  * OA (the first round) is always unlocked.
  */

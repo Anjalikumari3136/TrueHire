@@ -109,7 +109,7 @@ export default function FinalReportPage() {
           <div className="flex gap-3 justify-center">
             <button
               type="button"
-              onClick={() => navigate("/dashboard")}
+              onClick={() => navigate("/home")}
               className="py-2.5 px-5 rounded-xl font-semibold text-sm text-text-secondary
                          bg-surface-200 hover:bg-surface-300 border border-white/[0.06]
                          transition-all duration-200 cursor-pointer"
@@ -307,7 +307,7 @@ export default function FinalReportPage() {
             </button>
             <button
               type="button"
-              onClick={() => navigate("/dashboard")}
+              onClick={() => navigate("/home")}
               className="py-3 px-8 rounded-xl font-semibold text-sm text-text-primary border border-white/10
                          hover:bg-white/5 transition-all duration-300 cursor-pointer"
             >

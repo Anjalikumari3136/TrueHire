@@ -164,7 +164,7 @@ export default function LoginPage() {
     try {
       const data = await loginApi({ email: form.email, password: form.password });
       saveAuthSession(data.token, data.user);
-      navigate("/dashboard");
+      navigate("/home", { replace: true });
     } catch (err) {
       const msg =
         err?.response?.data?.message ||
@@ -181,7 +181,7 @@ export default function LoginPage() {
     try {
       const data = await googleLoginApi({ ...googleData, signUpIfNotFound: false });
       saveAuthSession(data.token, data.user);
-      navigate("/dashboard");
+      navigate("/home", { replace: true });
     } catch (err) {
       const resData = err?.response?.data;
       if (resData && resData.userExists === false) {

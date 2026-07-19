@@ -40,6 +40,22 @@ class OAState(TypedDict, total=False):
     questions: List[dict]
 
 
+class OAReportState(TypedDict, total=False):
+    """State for the OA evaluation graph (backs /api/oa/report)."""
+
+    profile: Optional[dict]
+    questions: List[dict]
+    answers: List[dict]
+    language: str
+    time_taken_seconds: Optional[int]
+
+    # Intermediate: the formatted submission transcript
+    submission_text: str
+
+    # Final output — same shape as the Technical/HR RoundReport
+    report: dict
+
+
 class ReportState(TypedDict, total=False):
     """State for the final consolidated report graph (backs /api/oa/final-report)."""
 

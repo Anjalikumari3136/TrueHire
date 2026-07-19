@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { submitTurn, getInterviewReport } from '../api';
+import { submitTurn, getInterviewReport, persistRoundResult } from '../api';
 import ConfirmSubmitModal from '../../components/ConfirmSubmitModal';
 import { markRoundComplete, getProgress, ROUND_ORDER } from '../../services/roundProgress';
+import RoundReportView, { RoundReportLoading, RoundReportError } from './RoundReportView';
 
 const API_BASE = import.meta.env.VITE_FASTAPI_URL || 'http://localhost:8000';
 
-export default function InterviewChat({ sessionData, onBackToDashboard }) {
+export default function InterviewChat({ sessionData, onBackToDashboard, onBackToRounds }) {
   const { token } = useAuth();
   const navigate = useNavigate();
   
@@ -205,15 +206,36 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
 
   // Fetch final evaluation report
   const handleTransitionToReport = async () => {
-    // Mark this round complete so the next round unlocks (Technical → HR).
+    // Mark this round complete so the next round unlocks (OA → Technical → HR).
     markRoundComplete(sessionData.roundType);
     setViewState('report');
     setLoadingReport(true);
     setError('');
 
     try {
+      // Fetch this round's evaluation. This ALSO records the round's result on the
+      // server, which the final consolidated report depends on — so it must run
+      // for every round (including HR) before we generate the final report.
       const reportData = await getInterviewReport(token, sessionData.session_id);
       setReport(reportData);
+
+      // Durably store this round (conversation + evaluation). FastAPI keeps both
+      // in memory only, so without this they vanish on restart. Fire-and-forget:
+      // persistRoundResult never throws, so it cannot block the report screen.
+      persistRoundResult(token, {
+        round: sessionData.roundType,
+        aiSessionId: sessionData.session_id,
+        transcript: history,
+        report: reportData,
+      });
+
+      // Once all three rounds (OA + Technical + HR) are complete, automatically
+      // generate the final consolidated report — no manual step needed.
+      if (ROUND_ORDER.every((r) => getProgress()[r])) {
+        setLoadingReport(false);
+        navigate('/interview/final-report');
+        return;
+      }
     } catch (err) {
       setError(err.message || 'Failed to fetch final readiness report.');
     } finally {
@@ -461,189 +483,65 @@ export default function InterviewChat({ sessionData, onBackToDashboard }) {
   if (viewState === 'report') {
     if (loadingReport) {
       return (
-        <div className="min-h-screen flex items-center justify-center px-4 pt-16">
-          <div className="text-center animate-fade-in-up">
-            <div className="relative w-24 h-24 mx-auto mb-8">
-              <div className="absolute inset-0 rounded-full border-2 border-brand-500/20" />
-              <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-brand-500 animate-spin-slow" />
-              <div className="absolute inset-3 rounded-full bg-brand-500/10 animate-pulse-glow flex items-center justify-center">
-                <svg className="w-8 h-8 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-              </div>
-            </div>
-            <h2 className="text-xl font-bold text-text-primary mb-2">Compiling Readiness Report...</h2>
-            <p className="text-text-secondary text-sm max-w-sm mx-auto">
-              Please wait while Gemini evaluates your Q&A history and grades your technical profile.
-            </p>
-          </div>
-        </div>
+        <RoundReportLoading subtitle="Please wait while Gemini evaluates your Q&A history and grades your technical profile." />
       );
     }
 
     if (!report) {
-      return (
-        <div className="min-h-screen flex items-center justify-center px-4 pt-16">
-          <div className="text-center max-w-sm">
-            <svg className="w-12 h-12 text-error mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <h2 className="text-lg font-bold text-text-primary mb-2">Readiness Compilation Failed</h2>
-            <p className="text-text-secondary text-sm mb-6">{error || 'An unexpected server error occurred.'}</p>
-            <button
-              onClick={handleTransitionToReport}
-              className="py-2.5 px-6 rounded-xl font-semibold text-sm text-white bg-brand-500 hover:bg-brand-400 transition-all cursor-pointer"
-            >
-              Retry Compilation
-            </button>
-          </div>
-        </div>
-      );
+      return <RoundReportError message={error} onRetry={handleTransitionToReport} />;
     }
 
-    const readinessScore = Math.round(report.overall_score * 10); // scale 0-10 to % or display as 0-100
-
     return (
-      <div className="min-h-screen pt-24 pb-16 px-4 bg-surface-0">
-        <div className="max-w-4xl mx-auto">
-          {/* Header */}
-          <div className="text-center mb-10 animate-fade-in-up">
-            <h1 className="text-3xl font-extrabold text-text-primary mb-2 tracking-tight">
-              Interview Evaluation Report
-            </h1>
-            <p className="text-text-secondary text-sm">
-              Consolidated readiness insights for your targeted practice session.
-            </p>
-          </div>
-
-          {/* Overall score card */}
-          <div className="glass-strong rounded-2xl p-8 mb-8 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
-            <div className="flex flex-col sm:flex-row items-center gap-8">
-              {/* Progress Circle indicator */}
-              <div className="relative w-32 h-32 shrink-0">
-                <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
-                  <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
-                  <circle
-                    cx="60" cy="60" r="52" fill="none"
-                    stroke="url(#report-rate-gradient)"
-                    strokeWidth="8"
-                    strokeLinecap="round"
-                    strokeDasharray={`${2 * Math.PI * 52}`}
-                    strokeDashoffset={`${2 * Math.PI * 52 * (1 - report.overall_score / 10)}`}
-                    style={{ transition: 'stroke-dashoffset 1.5s ease-out' }}
-                  />
-                  <defs>
-                    <linearGradient id="report-rate-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#6366f1" />
-                      <stop offset="100%" stopColor="#22c55e" />
-                    </linearGradient>
-                  </defs>
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-3xl font-extrabold text-text-primary">{readinessScore}%</span>
-                  <span className="text-xs text-text-muted">Readiness</span>
-                </div>
-              </div>
-
-              {/* Summary description */}
-              <div className="flex-1 text-center sm:text-left">
-                <h2 className="text-xl font-bold text-text-primary mb-2">Session Readiness Summary</h2>
-                <p className="text-text-secondary text-sm leading-relaxed">
-                  {report.readiness_summary}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Strengths & Gaps lists */}
-          <div className="grid sm:grid-cols-2 gap-6 mb-8 animate-fade-in-up" style={{ animationDelay: '0.2s' }}>
-            {/* Strengths */}
-            <div className="glass-strong rounded-2xl p-6">
-              <div className="flex items-center gap-2 mb-4 text-verified">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <h3 className="text-sm font-semibold text-text-primary">Key Strengths</h3>
-              </div>
-              <ul className="space-y-3">
-                {report.strengths?.map((str, idx) => (
-                  <li key={idx} className="flex gap-2.5 items-start text-sm text-text-secondary leading-relaxed">
-                    <span className="text-verified mt-1 shrink-0">•</span>
-                    <span>{str}</span>
-                  </li>
-                ))}
-                {(!report.strengths || report.strengths.length === 0) && (
-                  <p className="text-xs text-text-muted italic">No specific strengths recorded.</p>
-                )}
-              </ul>
-            </div>
-
-            {/* Gaps */}
-            <div className="glass-strong rounded-2xl p-6">
-              <div className="flex items-center gap-2 mb-4 text-unverified">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <h3 className="text-sm font-semibold text-text-primary">Identified Gaps</h3>
-              </div>
-              <ul className="space-y-3">
-                {report.gaps?.map((gap, idx) => (
-                  <li key={idx} className="flex gap-2.5 items-start text-sm text-text-secondary leading-relaxed">
-                    <span className="text-unverified mt-1 shrink-0">•</span>
-                    <span>{gap}</span>
-                  </li>
-                ))}
-                {(!report.gaps || report.gaps.length === 0) && (
-                  <p className="text-xs text-text-muted italic">No significant gaps identified.</p>
-                )}
-              </ul>
-            </div>
-          </div>
-
-          {/* Recommended focus areas */}
-          <div className="glass-strong rounded-2xl p-6 mb-8 animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
-            <div className="flex items-center gap-2 mb-4 text-brand-400">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-              </svg>
-              <h3 className="text-sm font-semibold text-text-primary">Recommended Focus Areas</h3>
-            </div>
-            <ul className="space-y-3">
-              {report.recommended_focus_areas?.map((item, idx) => (
-                <li key={idx} className="flex gap-2.5 items-start text-sm text-text-secondary leading-relaxed">
-                  <span className="text-brand-400 mt-1 shrink-0">•</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
-            {ROUND_ORDER.every((r) => getProgress()[r]) && (
+      <RoundReportView
+        report={report}
+        scoreScale={100}
+        actions={(() => {
+          const allRoundsComplete = ROUND_ORDER.every((r) => getProgress()[r]);
+          return (
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+              {allRoundsComplete && (
+                <button
+                  onClick={() => navigate('/interview/final-report')}
+                  className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-verified to-verified/80
+                             hover:opacity-90 shadow-[0_0_20px_rgba(34,197,94,0.25)] transition-all duration-300 cursor-pointer
+                             flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  View Final Report
+                </button>
+              )}
+              {/* Not finished yet → let the candidate go back and take the next
+                  (now-unlocked) round instead of resetting the whole flow. */}
+              {!allRoundsComplete && onBackToRounds && (
+                <button
+                  onClick={onBackToRounds}
+                  className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600
+                             hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]
+                             hover:shadow-[0_0_30px_rgba(99,102,241,0.35)] transition-all duration-300 cursor-pointer
+                             flex items-center justify-center gap-2"
+                >
+                  Continue to Next Round
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              )}
               <button
-                onClick={() => navigate('/interview/final-report')}
-                className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-verified to-verified/80
-                           hover:opacity-90 shadow-[0_0_20px_rgba(34,197,94,0.25)] transition-all duration-300 cursor-pointer
-                           flex items-center justify-center gap-2"
+                onClick={onBackToDashboard}
+                className={`py-3 px-8 rounded-xl font-semibold text-sm transition-all duration-300 cursor-pointer ${
+                  allRoundsComplete
+                    ? 'text-white bg-gradient-to-r from-brand-500 to-brand-600 hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]'
+                    : 'text-text-primary border border-white/10 hover:bg-white/5'
+                }`}
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                View Final Report
+                Return to Dashboard
               </button>
-            )}
-            <button
-              onClick={onBackToDashboard}
-              className="py-3 px-8 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-brand-500 to-brand-600
-                         hover:from-brand-400 hover:to-brand-500 shadow-[0_0_20px_rgba(99,102,241,0.2)]
-                         hover:shadow-[0_0_30px_rgba(99,102,241,0.35)] transition-all duration-300 cursor-pointer"
-            >
-              Return to Dashboard
-            </button>
-          </div>
-        </div>
-      </div>
+            </div>
+          );
+        })()}
+      />
     );
   }
 

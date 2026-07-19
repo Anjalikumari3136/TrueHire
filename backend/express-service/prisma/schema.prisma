@@ -8,21 +8,116 @@ datasource db {
 }
 
 model User {
-  id           String            @id @default(cuid())
+  id           String             @id @default(cuid())
   name         String
-  email        String            @unique
+  email        String             @unique
   password     String
-  role         Role              @default(CANDIDATE)
+  role         Role               @default(CANDIDATE)
   profileImage String?
   phone        String?
   location     String?
   currentRole  String?
   experience   Int?
   targetRole   String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  github       String?
+  linkedin     String?
+  college      String?
+  bio          String?
+  accentColor  String             @default("purple")
+  theme        String             @default("dark")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
   resume       Resume?
   reports      InterviewReport[]
+  activities   ActivityLog[]
+  sessions     InterviewSession[]
+  roundResults RoundResult[]
+}
+
+// One row per interview attempt. A NEW row is created every time Build Profile
+// completes (each résumé upload = a brand-new session). Previous sessions are
+// never overwritten — the prior active one is archived. One user → many
+// sessions. Holds session metadata + progress + links to the generated report.
+model InterviewSession {
+  id                 String        @id @default(cuid())
+  interviewSessionId String        @unique @default(uuid())
+  userId             String
+  resumeName         String?
+  resumeSnapshotUrl  String? // storage path of the résumé used for this session
+  profileJson        Json? // the analyzed candidate profile — lets Resume reuse it without re-uploading
+  status             String        @default("in_progress") // in_progress | completed | archived
+  currentRound       String        @default("OA") // OA | Technical | HR
+  // Server-side round-progression gate (OA → Technical → HR). Previously this
+  // lived ONLY in the browser's localStorage, so clearing site data or switching
+  // device lost the candidate's progress. Same shape as
+  // InterviewReport.completedRounds. Defaulted, so existing rows stay valid.
+  completedRounds    String[]      @default([])
+  overallScore       Float?
+  reportInterviewId  String? // links to InterviewReport.interviewId once generated
+  reportAvailable    Boolean       @default(false)
+  emailSent          Boolean       @default(false)
+  startedAt          DateTime      @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roundResults       RoundResult[]
+
+  @@index([userId, status])
+}
+
+// One row per (interview session, round). Durable home for everything that used
+// to exist ONLY in FastAPI's process memory (oa_sessions / candidate_assessments
+// / InterviewAgent.sessions) and was therefore lost on every restart:
+//
+//   • the generated OA question set          → questionsJson
+//   • the candidate's submitted code         → answersJson + language
+//   • the Technical/HR conversation          → transcriptJson
+//   • that round's own evaluation report     → reportJson + score
+//   • how long the round actually took       → startedAt/submittedAt/timeTakenSeconds
+//
+// Writes are idempotent: (interviewSessionId, round) is unique, so an endpoint
+// that fires twice updates the same row instead of duplicating it. Purely
+// additive — no existing table or query depends on it.
+model RoundResult {
+  id                 String    @id @default(cuid())
+  userId             String
+  interviewSessionId String // → InterviewSession.interviewSessionId
+  round              String // OA | Technical | HR
+  status             String    @default("in_progress") // in_progress | submitted | evaluated
+  aiSessionId        String? // the FastAPI-side session id for this round
+  questionsJson      Json? // OA: the exact generated question set
+  answersJson        Json? // OA: the submitted code, per question
+  language           String? // OA: submission language
+  transcriptJson     Json? // Technical/HR: full Q&A history with per-answer scores
+  reportJson         Json? // this round's evaluation report
+  score              Float? // this round's overall score (0–100)
+  startedAt          DateTime?
+  submittedAt        DateTime?
+  timeTakenSeconds   Int?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session InterviewSession @relation(fields: [interviewSessionId], references: [interviewSessionId], onDelete: Cascade)
+
+  @@unique([interviewSessionId, round])
+  @@index([userId, round])
+}
+
+// Dynamic, timestamped activity feed for the Main Dashboard. Additive — logging
+// is done only from Express controllers we own (report lifecycle). Round/resume
+// events are derived from real records at read time. Never overwrites anything.
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String // e.g. report_generated, report_email_sent, report_downloaded, interview_completed
+  label     String
+  meta      Json?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model Resume {
@@ -40,22 +135,23 @@ model Resume {
 // (e.g. after a fresh résumé upload) creates a new row with an incremented
 // reportVersion, so full report history is preserved.
 model InterviewReport {
-  id                String    @id @default(cuid())
-  userId            String
-  interviewId       String    @unique
-  resumeName        String?
-  resumeSnapshotUrl String? // storage path of the résumé used for this interview (session boundary)
-  reportJson        Json
-  overallScore      Float?
-  completedRounds   String[]  @default([])
-  reportPdfPath     String? // storage path of the generated PDF (null if PDF generation failed)
-  reportGeneratedAt DateTime  @default(now())
-  reportEmailSent   Boolean   @default(false)
-  reportEmailSentAt DateTime?
-  reportVersion     Int       @default(1)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String    @id @default(cuid())
+  userId             String
+  interviewId        String    @unique
+  interviewSessionId String? // links this report back to its InterviewSession
+  resumeName         String?
+  resumeSnapshotUrl  String? // storage path of the résumé used for this interview (session boundary)
+  reportJson         Json
+  overallScore       Float?
+  completedRounds    String[]  @default([])
+  reportPdfPath      String? // storage path of the generated PDF (null if PDF generation failed)
+  reportGeneratedAt  DateTime  @default(now())
+  reportEmailSent    Boolean   @default(false)
+  reportEmailSentAt  DateTime?
+  reportVersion      Int       @default(1)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }

@@ -1,0 +1,81 @@
+# Render Blueprint — defines BOTH backend services from this one repository.
+#
+# Use it via Render → New → Blueprint (see DEPLOYMENT.md). Every secret is
+# declared `sync: false`, which means Render will PROMPT you for the value
+# instead of reading it from this file — no credentials are committed here.
+#
+# ⚠️  IMPORTANT — do not scale either service past ONE instance.
+# Both services keep live interview state in process memory (FastAPI's
+# oa_sessions / candidate_assessments / agent sessions, and Express's
+# inFlightReports report-dedup map). A second instance sends a candidate's
+# requests to a process that has never seen their session, which surfaces as
+# random "No candidate profile found" / "No active OA session" errors and can
+# send the report email twice.
+
+services:
+  # ── Express API (auth, database, résumé storage, reports, email) ────────────
+  - type: web
+    name: truehire-api
+    runtime: node
+    plan: free
+    rootDir: backend/express-service
+    # `npm run build` runs `prisma generate && prisma migrate deploy`, so the
+    # database schema is applied on every deploy before the server starts.
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20.18.0"
+      # ── Secrets — Render prompts for these ──
+      - key: DATABASE_URL          # Supabase Postgres connection string
+        sync: false
+      - key: JWT_SECRET            # MUST be byte-identical to truehire-ai's
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS            # Gmail App Password, not the account password
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      # ── Cross-service URLs — set after the other services exist ──
+      - key: CLIENT_URL            # your Vercel URL, comma-separated for several
+        sync: false
+      - key: CLIENT_ORIGIN_REGEX   # optional: ^https://.*\.vercel\.app$
+        sync: false
+      - key: FASTAPI_URL           # https://truehire-ai.onrender.com
+        sync: false
+
+  # ── FastAPI AI service (Gemini + LangGraph) ────────────────────────────────
+  - type: web
+    name: truehire-ai
+    runtime: python
+    plan: free
+    rootDir: backend/fastapi-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.1"
+      # Switches off the local-dev secret fallback: the service now refuses to
+      # boot without a real JWT_SECRET instead of silently using a public one.
+      - key: ENVIRONMENT
+        value: production
+      # ── Secrets — Render prompts for these ──
+      - key: JWT_SECRET            # MUST be byte-identical to truehire-api's
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      # ── The browser calls this service directly, so its CORS list must
+      #    contain the Vercel frontend origin. ──
+      - key: ALLOWED_ORIGINS       # https://your-app.vercel.app
+        sync: false
+      - key: ALLOWED_ORIGIN_REGEX  # optional: https://.*\.vercel\.app
+        sync: false

@@ -19,6 +19,147 @@ body {
   margin-inline: auto;
 }
 
+/* ============================================================================
+ * Dashboard accent color (scoped)
+ * ----------------------------------------------------------------------------
+ * `.accent-scope` wraps ONLY the new Main Dashboard suite. Setting data-accent
+ * on it overrides the Tailwind `--color-brand-*` variables for that subtree,
+ * so every brand-* utility (buttons, cards, progress, links, highlights, and
+ * brand-driven icons) retints — WITHOUT affecting login / interview / report
+ * pages, which live outside this wrapper. Custom-property inheritance does the
+ * work; no page reload needed.
+ * ========================================================================== */
+.accent-scope[data-accent="purple"] {
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+}
+.accent-scope[data-accent="blue"] {
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+}
+.accent-scope[data-accent="green"] {
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+}
+
+/* Smooth 250ms color transition when the accent/theme changes (no page reload). */
+.accent-scope,
+.accent-scope * {
+  transition: background-color 0.25s ease, border-color 0.25s ease,
+    color 0.25s ease, fill 0.25s ease, stroke 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* ============================================================================
+ * Dashboard THEME (Light / Dark) — scoped to the dashboard only
+ * ----------------------------------------------------------------------------
+ * Dark is the default and needs NO overrides (inherits the root dark tokens),
+ * so the current appearance is preserved exactly. Light mode overrides the
+ * scoped design tokens + glass surfaces + white-alpha utilities, ONLY inside
+ * `.accent-scope[data-theme="light"]`. The accent color is kept in both themes.
+ * Login / interview / report pages are outside .accent-scope → never affected.
+ * ========================================================================== */
+.accent-scope[data-theme="light"] {
+  min-height: 100vh;
+  background: #f8fafc;
+  /* Text tokens → professional dark-gray on light */
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #64748b;
+}
+
+/* Cards: white with soft shadows (specificity beats the base @utility class) */
+.accent-scope[data-theme="light"] .glass-strong {
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.accent-scope[data-theme="light"] .glass {
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Flip white-alpha overlays/borders to slate so they read on a light surface */
+.accent-scope[data-theme="light"] .bg-white\/5 { background-color: rgba(15, 23, 42, 0.04) !important; }
+.accent-scope[data-theme="light"] .bg-white\/\[0\.02\] { background-color: rgba(15, 23, 42, 0.02) !important; }
+.accent-scope[data-theme="light"] .bg-white\/\[0\.03\] { background-color: rgba(15, 23, 42, 0.03) !important; }
+.accent-scope[data-theme="light"] .border-white\/5 { border-color: rgba(15, 23, 42, 0.06) !important; }
+.accent-scope[data-theme="light"] .border-white\/10 { border-color: rgba(15, 23, 42, 0.10) !important; }
+.accent-scope[data-theme="light"] .border-white\/20 { border-color: rgba(15, 23, 42, 0.15) !important; }
+.accent-scope[data-theme="light"] .divide-white\/5 > * + * { border-color: rgba(15, 23, 42, 0.06) !important; }
+.accent-scope[data-theme="light"] .hover\:bg-white\/5:hover { background-color: rgba(15, 23, 42, 0.05) !important; }
+
+/* ============================================================================
+ * Notifications dropdown (production SaaS style — GitHub / Linear / Notion)
+ * ========================================================================== */
+@keyframes notif-pop {
+  from { opacity: 0; transform: translateY(-10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes notif-item-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.notif-panel {
+  background: #17171d;                 /* solid dark — never see-through */
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  z-index: 9999;
+  transform-origin: top right;
+  animation: notif-pop 0.18s ease-out both;
+}
+.notif-item {
+  animation: notif-item-in 0.28s ease-out both;
+}
+
+/* Modern thin scrollbar that matches the theme */
+.notif-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.notif-scroll::-webkit-scrollbar { width: 6px; }
+.notif-scroll::-webkit-scrollbar-track { background: transparent; }
+.notif-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+.notif-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+
+/* Light-theme panel (keeps the dropdown readable when the dashboard is light) */
+.accent-scope[data-theme="light"] .notif-panel {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.18);
+}
+.accent-scope[data-theme="light"] .notif-scroll {
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+}
+.accent-scope[data-theme="light"] .notif-scroll::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.2);
+}
+
 .gradient-text {
   background: var(--gradient);
   -webkit-background-clip: text;

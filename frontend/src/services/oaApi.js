@@ -31,6 +31,17 @@ export async function submitOA(payload) {
 }
 
 /**
+ * Generate (once) and fetch the OA round evaluation report.
+ * Mirrors the Technical round's report flow and returns the SAME report shape
+ * (overall_score, strengths, gaps, recommended_focus_areas, summary), so it can
+ * be rendered with the identical report UI.
+ */
+export async function getOAReport() {
+  const res = await api.post("/api/oa/report");
+  return res.data;
+}
+
+/**
  * Fetch the final consolidated report across OA + Technical + HR + résumé.
  *
  * On the FIRST completion this triggers the server to persist the report,

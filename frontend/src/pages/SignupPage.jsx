@@ -201,7 +201,7 @@ export default function SignupPage() {
       sessionStorage.removeItem("truehire_token");
       sessionStorage.removeItem("truehire_user");
       
-      navigate("/dashboard");
+      navigate("/home", { replace: true });
     } catch (err) {
       const msg = err?.response?.data?.message || "Google authentication failed. Please try again.";
       setApiError(msg);

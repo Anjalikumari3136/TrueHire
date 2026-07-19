@@ -58,6 +58,27 @@ class OAQuestionSet(BaseModel):
     questions: List[OAQuestion] = Field(description="Exactly 5 questions")
 
 
+# ── OA round evaluation report ──────────────────────────────────────────────
+# Deliberately mirrors agent.py's RoundReport (used by the Technical/HR rounds)
+# so the OA report renders with the SAME frontend UI/UX as the Technical report.
+
+class OAQuestionBreakdown(BaseModel):
+    question: str = Field(description="The question title / problem asked")
+    answer: str = Field(description="Short description of what the candidate submitted")
+    score: int = Field(ge=0, le=10, description="Score 0-10 for this question")
+    skill_targeted: str = Field(description="Primary skill this question targeted")
+    reasoning: str = Field(description="Why this score was assigned")
+
+
+class OARoundReport(BaseModel):
+    overall_score: float = Field(ge=0, le=100, description="Aggregate OA score 0-100")
+    strengths: List[str] = Field(description="Top demonstrated strengths")
+    gaps: List[str] = Field(description="Knowledge gaps or weak areas identified")
+    recommended_focus_areas: List[str] = Field(description="Topics the candidate should study")
+    question_breakdown: List[OAQuestionBreakdown] = Field(description="Per-question analysis")
+    summary: str = Field(description="2-3 sentence overall assessment of the OA round")
+
+
 # ── Final consolidated candidate report ─────────────────────────────────────
 
 class RoundScoreSummary(BaseModel):

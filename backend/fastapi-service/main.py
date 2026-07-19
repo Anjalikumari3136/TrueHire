@@ -29,22 +29,46 @@ from agent import InterviewAgent
 
 load_dotenv()
 
-# Synchronize JWT_SECRET with express-service if present to allow seamless auth bridging
-express_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), "express-service", ".env")
-if os.path.exists(express_env):
-    try:
-        with open(express_env, "r") as f:
-            for line in f:
-                if line.strip().startswith("JWT_SECRET="):
-                    val = line.strip().split("=", 1)[1].strip('"').strip("'")
-                    os.environ["JWT_SECRET"] = val
-                    print("[TrueHire] Synchronized JWT_SECRET with express-service")
-                    break
-    except Exception as e:
-        print(f"[TrueHire] Warning: could not read express-service/.env: {e}")
+# ── Environment ─────────────────────────────────────────────────────────────────
+# ENVIRONMENT=production is set on Render. It switches off the local-dev
+# conveniences below, which are unsafe (or simply meaningless) once deployed.
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+IS_PRODUCTION = ENVIRONMENT == "production"
+
+# Local dev only: both services must sign JWTs with the SAME secret, so we read
+# express-service/.env off disk as a convenience when running the two locally.
+#
+# This MUST NOT run in production: the sibling directory does not exist once the
+# services are deployed separately, the read would silently fail, and the code
+# used to fall back to a hardcoded secret that is public in this repo — letting
+# anyone forge a token for any user. In production the secret comes from the
+# environment or the app refuses to boot (see below).
+if not IS_PRODUCTION:
+    express_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), "express-service", ".env")
+    if os.path.exists(express_env):
+        try:
+            with open(express_env, "r") as f:
+                for line in f:
+                    if line.strip().startswith("JWT_SECRET="):
+                        val = line.strip().split("=", 1)[1].strip('"').strip("'")
+                        os.environ["JWT_SECRET"] = val
+                        print("[TrueHire] Synchronized JWT_SECRET with express-service")
+                        break
+        except Exception as e:
+            print(f"[TrueHire] Warning: could not read express-service/.env: {e}")
 
 # ── Credentials & Config ────────────────────────────────────────────────────────
-JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-this-in-production")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    if IS_PRODUCTION:
+        # Fail loudly at boot rather than silently accepting forged tokens.
+        raise RuntimeError(
+            "JWT_SECRET is not set. It must match the Express service's JWT_SECRET "
+            "exactly, or authentication between the two services will fail."
+        )
+    JWT_SECRET = "dev-secret-change-this-in-production"
+    print("[TrueHire] WARNING: using the insecure development JWT secret.")
+
 JWT_ALGORITHM  = "HS256"
 JWT_EXPIRY_HOURS = 24
 
@@ -60,6 +84,7 @@ from graph.utils import extract_pdf_text, analyze_github, http_client
 from graph.nodes.resume_nodes import parse_resume_text
 from graph.profile_graph import run_profile_graph
 from graph.oa_graph import run_oa_graph
+from graph.oa_report_graph import run_oa_report_graph
 from graph.report_graph import run_report_graph
 
 # ── Interview orchestrator agent (uses the shared Gemini client) ────────────────
@@ -76,14 +101,28 @@ app = FastAPI(title="TrueHire AI - Integrated Multi-Round Interview Engine")
 async def shutdown_event():
     await http_client.aclose()
 
-# CORS — allows the Vite frontend (localhost:5173/5174) to call this backend.
-# Without this, every request from the browser fails with "Failed to fetch".
+# CORS — the browser calls this service DIRECTLY for the Technical/HR rounds, so
+# the deployed frontend's origin must be allowed here or every request fails with
+# "Failed to fetch". Origins are env-driven for deployment:
+#
+#   ALLOWED_ORIGINS       comma-separated exact origins (your Vercel production URL)
+#   ALLOWED_ORIGIN_REGEX  optional regex, e.g. to allow Vercel preview deploys:
+#                         https://.*\.vercel\.app
+#
+# Defaults keep local development working with no configuration.
+DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:5174"
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", DEFAULT_ORIGINS).split(",") if o.strip()
+]
+ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX") or None
+
+print(f"[TrueHire] CORS allowed origins: {ALLOWED_ORIGINS}" +
+      (f" (+ regex {ALLOWED_ORIGIN_REGEX})" if ALLOWED_ORIGIN_REGEX else ""))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -252,12 +291,18 @@ async def build_profile(
     other_coding_profile: Optional[str] = Form(None),
     graduation_year: Optional[str] = Form(None),
     cgpa: Optional[float] = Form(None),
+    session_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
     """
     Combines resume + GitHub into one unified candidate profile.
     Requires a valid Bearer token (see /auth/login).
     Response shape is unchanged — frontend depends on this exact contract.
+
+    `session_id` (optional, sent by the Express proxy) marks this as a brand-new
+    Interview Session: any in-memory state from a previous interview for this
+    candidate is cleared so NOTHING from the old interview is reused (fresh OA
+    questions + a clean report). Building a profile always starts a new interview.
     """
     t_start = time.perf_counter()
     try:
@@ -279,8 +324,19 @@ async def build_profile(
             cgpa=cgpa,
         )
 
-        # Persist on the user record so /api/interview/start can look it up
-        fake_users_db[current_user["email"]]["profile"] = profile
+        email = current_user["email"]
+
+        # Fresh interview: discard any prior in-memory interview state for this
+        # candidate so the new résumé generates brand-new OA questions and a clean
+        # report (nothing from the previous interview is reused). The durable
+        # record of past interviews lives in the Express database, not here.
+        oa_sessions.pop(email, None)
+        candidate_assessments.pop(email, None)
+
+        # Persist on the user record so /api/interview/start can look it up.
+        # Track the active session id for reference/scoping.
+        fake_users_db[email]["profile"] = profile
+        fake_users_db[email]["active_session_id"] = session_id
 
         total_build_time = time.perf_counter() - t_start
         print(f"[Profiling] Total build_profile endpoint execution time: {total_build_time:.4f}s")
@@ -295,6 +351,26 @@ async def build_profile(
             status_code=500,
             detail=f"Failed to build candidate profile: {e}",
         )
+
+
+class RestoreProfileRequest(BaseModel):
+    profile: dict
+
+
+@app.post("/restore-profile")
+async def restore_profile(
+    req: RestoreProfileRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Re-seed the in-memory candidate profile from a previously analyzed profile
+    (persisted in the Express database) WITHOUT re-uploading the résumé or
+    re-running the AI analysis. Used when a candidate RESUMES a pending
+    interview, so OA/Technical/HR questions are generated from the same résumé
+    analysis as before.
+    """
+    fake_users_db[current_user["email"]]["profile"] = req.profile
+    return {"ok": True}
 
 
 # =====================================================================
@@ -699,6 +775,45 @@ async def oa_submit(
         "message": "OA submitted successfully.",
         "session_id": req.session_id,
     }
+
+
+@app.post("/api/oa/report")
+async def oa_report(current_user: dict = Depends(get_current_user)):
+    """
+    Generate (once) and return the OA round evaluation report.
+
+    Mirrors the Technical/HR round report flow (`/api/interview/report`): the AI
+    grades the submitted code and returns the SAME RoundReport shape, so the
+    frontend renders it with the identical report UI. The result is cached on the
+    OA session and recorded in `candidate_assessments` so the final consolidated
+    report can use the evaluation instead of raw code.
+    """
+    email = current_user["email"]
+    session = oa_sessions.get(email)
+    if not session:
+        raise HTTPException(404, "No OA session found for this candidate.")
+
+    submission = session.get("submission")
+    if not submission:
+        raise HTTPException(409, "The OA has not been submitted yet.")
+
+    # Generate-once: reuse the cached report on repeat calls.
+    if session.get("report"):
+        return session["report"]
+
+    report = await run_oa_report_graph(
+        profile=current_user.get("profile"),
+        questions=session.get("questions", []),
+        answers=submission.get("answers", []),
+        language=submission.get("language"),
+        time_taken_seconds=submission.get("time_taken_seconds"),
+    )
+
+    session["report"] = report
+    # Feed the evaluation into the final consolidated report.
+    candidate_assessments.setdefault(email, {}).setdefault("OA", {})["report"] = report
+
+    return report
 
 
 # =====================================================================
